@@ -1,0 +1,14 @@
+{
+  "name": "opencode-pocket",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A fast, mobile-first web client for OpenCode running in Termux.",
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "start:lan": "node server.mjs --port 8099 --host 0.0.0.0",
+    "icons": "python tools/make_icons.py"
+  },
+  "keywords": ["opencode", "termux", "android", "pwa", "coding-agent"],
+  "license": "MIT"
+}

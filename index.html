@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, interactive-widget=resizes-content, viewport-fit=cover"
+    />
+    <title>OpenCode Pocket</title>
+    <meta name="description" content="A fast, mobile-first client for OpenCode running in Termux." />
+    <meta name="theme-color" content="#0a0b0d" />
+    <link rel="icon" href="assets/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="assets/icon-180.png" />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <link rel="stylesheet" href="assets/app.css" />
+  </head>
+  <body>
+    <svg class="sprite" aria-hidden="true">
+      <symbol id="i-logo" viewBox="0 0 32 32">
+        <rect x="1" y="1" width="30" height="30" rx="9" fill="currentColor" />
+        <path d="M9 12.5 13.5 16 9 19.5" stroke="#0a0b0d" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" fill="none" />
+        <path d="M16.5 20h6" stroke="#0a0b0d" stroke-width="2.4" stroke-linecap="round" />
+      </symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></symbol>
+      <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" /><path d="m16.5 16.5 4 4" /></symbol>
+      <symbol id="i-back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" /></symbol>
+      <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6" fill="currentColor" stroke="none" /><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none" /><circle cx="19" cy="12" r="1.6" fill="currentColor" stroke="none" /></symbol>
+      <symbol id="i-send" viewBox="0 0 24 24"><path d="M4.5 12 20 4.5 15.5 20l-3.2-6.1L4.5 12Z" /><path d="m12.3 13.9 7.7-9.4" /></symbol>
+      <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="2.6" fill="currentColor" stroke="none" /></symbol>
+      <symbol id="i-attach" viewBox="0 0 24 24"><path d="M20 11.5 12.7 18.8a4.7 4.7 0 0 1-6.6-6.6l7.6-7.6a3.1 3.1 0 0 1 4.4 4.4l-7.5 7.5a1.6 1.6 0 0 1-2.2-2.2l6.8-6.8" /></symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2v.2a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-2.9-1.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 2.9 15H2.7a2 2 0 1 1 0-4h.2a1.7 1.7 0 0 0 1.2-2.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3.8a2 2 0 1 1 4 0v.2a1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V10a1.7 1.7 0 0 0 1.5 1h.2a2 2 0 1 1 0 4h-.2a1.7 1.7 0 0 0-1.5 1Z" /></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 13 4.5 4.5L19 7" /></symbol>
+      <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18" /></symbol>
+      <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2.5" /><path d="M15 5.5A2.5 2.5 0 0 0 12.5 3H6a3 3 0 0 0-3 3v6.5A2.5 2.5 0 0 0 5.5 15" /></symbol>
+      <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6" /></symbol>
+      <symbol id="i-terminal" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3" /><path d="m7.5 9 3 3-3 3M13 15h4" /></symbol>
+      <symbol id="i-wrench" viewBox="0 0 24 24"><path d="M14.5 6.5a4.5 4.5 0 0 0-6 5.8L3 17.8V21h3.2l5.5-5.5a4.5 4.5 0 0 0 5.8-6l-2.6 2.6-2.9-.7-.7-2.9 2.7-2.5Z" /></symbol>
+      <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5Z" /><path d="M14 3v5h5" /></symbol>
+      <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z" /></symbol>
+      <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8" /></symbol>
+      <symbol id="i-brain" viewBox="0 0 24 24"><path d="M9 4a3 3 0 0 0-3 3 3 3 0 0 0-1 5.8V15a3 3 0 0 0 3 3h1v2M15 4a3 3 0 0 1 3 3 3 3 0 0 1 1 5.8V15a3 3 0 0 1-3 3h-1v2M12 4v16" /></symbol>
+      <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 20 6v6c0 4.4-3.2 7.8-8 9-4.8-1.2-8-4.6-8-9V6l8-3Z" /><path d="m8.5 12 2.5 2.5 4.5-4.5" /></symbol>
+      <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2.5" /><path d="M10 2v3M14 2v3M10 19v3M14 19v3M2 10h3M2 14h3M19 10h3M19 14h3" /></symbol>
+      <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.6-5.9M20 4v5h-5" /></symbol>
+      <symbol id="i-wifi" viewBox="0 0 24 24"><path d="M2.5 9a15 15 0 0 1 19 0M5.5 12.5a10.5 10.5 0 0 1 13 0M8.7 16a6 6 0 0 1 6.6 0" /><circle cx="12" cy="19.3" r="1.2" fill="currentColor" stroke="none" /></symbol>
+      <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3" /><circle cx="8.5" cy="9.5" r="1.5" /><path d="m4 17 5-5 4.5 4.5 3-2.5 3.5 3.5" /></symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13" /></symbol>
+      <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4L20 8l-4-4L4 16v4Z" /><path d="m14 6 4 4" /></symbol>
+      <symbol id="i-github" viewBox="0 0 24 24"><path d="M9 19c-4.3 1.3-4.3-2.2-6-2.7m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6 0 0 0-1.3-3.2 4.3 4.3 0 0 0-.1-3.2s-1.1-.3-3.5 1.3a12 12 0 0 0-6.2 0C6.5 3 5.4 3.3 5.4 3.3a4.3 4.3 0 0 0-.1 3.2A4.6 4.6 0 0 0 4 9.7c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V22" /></symbol>
+    </svg>
+
+    <div id="app" class="app">
+      <!-- CONNECT -->
+      <section id="screen-connect" class="screen connect-screen">
+        <div class="connect-wrap">
+          <div class="hero">
+            <div class="hero-logo"><svg><use href="#i-logo" /></svg></div>
+            <h1>OpenCode<span>Pocket</span></h1>
+            <p class="hero-sub">Your coding agent, in your pocket.</p>
+          </div>
+
+          <form id="connect-form" class="card connect-card" autocomplete="off">
+            <label class="field">
+              <span class="label">Server URL</span>
+              <input id="connect-url" class="input" type="url" inputmode="url" spellcheck="false" placeholder="http://127.0.0.1:4096" />
+            </label>
+            <label class="field">
+              <span class="label">Password or pairing link</span>
+              <input id="connect-secret" class="input" type="text" spellcheck="false" autocapitalize="off" placeholder="Paste server password or pair link" />
+            </label>
+            <button id="connect-submit" class="btn btn-primary btn-block" type="submit">Connect</button>
+            <p id="connect-error" class="form-error" hidden></p>
+            <details class="help">
+              <summary>How do I get these?</summary>
+              <div class="help-body">
+                <p>In Termux, start the server:</p>
+                <pre><code>opencode serve --hostname 127.0.0.1 --port 4096</code></pre>
+                <p>It prints a <b>server password</b> on start. Or create a one-time link:</p>
+                <pre><code>opencode pair</code></pre>
+                <p>Paste either the password or the whole pairing link above. The link expires in 5&nbsp;minutes.</p>
+                <p class="hint">The app talks straight to your phone. Nothing leaves your network unless you expose it yourself.</p>
+              </div>
+            </details>
+          </form>
+
+          <button id="try-demo" type="button" class="demo-link">Explore the demo <svg><use href="#i-chevron" /></svg></button>
+
+          <p class="connect-foot">
+            <a href="https://github.com/shivapal12395-droid/opencode-pocket" target="_blank" rel="noreferrer">
+              <svg><use href="#i-github" /></svg> Open source
+            </a>
+            <span>·</span>
+            <span>v1.0</span>
+          </p>
+        </div>
+      </section>
+
+      <!-- SESSIONS -->
+      <section id="screen-sessions" class="screen sessions-screen" hidden>
+        <header class="topbar">
+          <div class="brand">
+            <span class="brand-mark"><svg><use href="#i-logo" /></svg></span>
+            <span class="brand-name">OpenCode<span class="brand-tag">Pocket</span></span>
+          </div>
+          <div class="topbar-actions">
+            <button id="conn-dot" class="conn-dot" title="Connection" aria-label="Connection status"><span></span></button>
+            <button id="open-settings" class="icon-btn" aria-label="Settings"><svg><use href="#i-settings" /></svg></button>
+          </div>
+        </header>
+
+        <div class="list-head">
+          <div class="search-box">
+            <svg><use href="#i-search" /></svg>
+            <input id="session-search" class="search-input" type="search" placeholder="Search sessions" autocomplete="off" />
+            <button id="clear-search" class="search-clear" hidden aria-label="Clear search"><svg><use href="#i-x" /></svg></button>
+          </div>
+        </div>
+
+        <main id="session-list" class="session-list" aria-live="polite"></main>
+
+        <button id="fab-new" class="fab" aria-label="New session"><svg><use href="#i-plus" /></svg>New session</button>
+      </section>
+
+      <!-- CHAT -->
+      <section id="screen-chat" class="screen chat-screen" hidden>
+        <header class="topbar chat-topbar">
+          <button id="chat-back" class="icon-btn" aria-label="Back"><svg><use href="#i-back" /></svg></button>
+          <button id="chat-title" class="chat-title" title="Rename session">
+            <span class="chat-title-text">Session</span>
+            <span class="chat-sub" id="chat-sub"></span>
+          </button>
+          <span id="chat-status" class="chat-status" hidden><i class="dot"></i><span>Working</span></span>
+          <button id="chat-menu" class="icon-btn" aria-label="Session menu"><svg><use href="#i-more" /></svg></button>
+        </header>
+
+        <main id="messages" class="messages" aria-live="polite"></main>
+
+        <div id="jump-latest" class="jump-latest" hidden>
+          <button>Jump to latest <svg><use href="#i-chevron" /></svg></button>
+        </div>
+
+        <div id="composer" class="composer">
+          <button id="perm-banner" class="perm-banner" hidden>
+            <span class="perm-dot"></span>
+            <span>OpenCode is waiting for permission</span>
+            <span class="perm-review">Review</span>
+          </button>
+          <div class="composer-box">
+            <div id="attach-strip" class="attach-strip" hidden></div>
+            <textarea id="input" class="composer-input" rows="1" placeholder="Describe your task…" enterkeyhint="send"></textarea>
+            <div class="composer-tools">
+              <button id="btn-attach" class="tool-btn" aria-label="Attach image"><svg><use href="#i-image" /></svg></button>
+              <button id="chip-model" class="chip"><svg><use href="#i-cpu" /></svg><span>Model</span><svg class="chip-caret"><use href="#i-chevron" /></svg></button>
+              <button id="chip-agent" class="chip"><svg><use href="#i-spark" /></svg><span>Agent</span><svg class="chip-caret"><use href="#i-chevron" /></svg></button>
+              <span id="composer-hint" class="composer-hint"></span>
+              <button id="btn-send" class="send-btn" aria-label="Send"><svg><use href="#i-send" /></svg></button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCRIM + SHEET -->
+      <div id="scrim" class="scrim" hidden></div>
+      <div id="sheet" class="sheet" role="dialog" aria-modal="true" hidden>
+        <div class="sheet-grab"></div>
+        <div class="sheet-head">
+          <h2 id="sheet-title"></h2>
+          <button id="sheet-close" class="icon-btn" aria-label="Close"><svg><use href="#i-x" /></svg></button>
+        </div>
+        <div id="sheet-body" class="sheet-body"></div>
+      </div>
+
+      <div id="toast" class="toast" hidden></div>
+    </div>
+
+    <script type="module" src="assets/app.js"></script>
+  </body>
+</html>
