@@ -39,17 +39,6 @@ const timeAgo = (ts) => {
   if (diff < 7 * 86_400_000) return `${Math.floor(diff / 86_400_000)}d`;
   return new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 };
-const dayKey = (ts) => {
-  const d = new Date(ts);
-  const now = new Date();
-  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  if (ts >= start) return "Today";
-  if (ts >= start - 86_400_000) return "Yesterday";
-  if (ts >= start - 7 * 86_400_000) return "Previous 7 days";
-  return "Earlier";
-};
-const fmtTime = (ts) =>
-  new Date(ts).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 
 /* ---------------------------------------------------------------- state */
 
@@ -580,7 +569,6 @@ function renderMessages(force = false) {
   const openReasoning = new Set($$(".reasoning.open", el.messages).map((n) => n.dataset.reasoning));
 
   const chunks = [];
-  let prevType = null;
 
   for (const m of state.messages) {
     if (m.type === "user") chunks.push(renderUser(m));
@@ -591,7 +579,6 @@ function renderMessages(force = false) {
       chunks.push(renderSystem(`$ ${(m.command ?? "").slice(0, 80)}`, "terminal"));
     else if (m.type === "compaction") chunks.push(renderSystem("Context compacted", "refresh"));
     else if (m.type === "system" && m.text) chunks.push(renderSystem(m.text, "spark"));
-    prevType = m.type;
   }
 
   if (!chunks.length) {
