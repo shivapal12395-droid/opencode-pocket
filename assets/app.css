@@ -5,8 +5,12 @@
    ========================================================= */
 
 :root {
-  --font: -apple-system, BlinkMacSystemFont, system-ui, ui-sans-serif, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  /* Roboto is named first on purpose: Android font-overlay packages (a system
+     wide "font" theme) replace the generic sans-serif/system-ui family, which
+     turns the whole UI into whatever handwriting font the theme store shipped.
+     Asking for Roboto by name bypasses the alias. */
+  --font: "Roboto", -apple-system, BlinkMacSystemFont, system-ui, ui-sans-serif, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --mono: "Roboto Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 
   --accent: #2563eb;
   --accent-ink: #ffffff;
