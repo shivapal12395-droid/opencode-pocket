@@ -369,6 +369,7 @@ svg { display: block; }
 .msg.enter { animation: rise 0.24s var(--ease) both; }
 @media (prefers-reduced-motion: reduce) { .msg.enter { animation: none; } }
 @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes slide-up { from { transform: translateY(18px); opacity: 0; } to { transform: none; opacity: 1; } }
 
 .msg-user { align-items: flex-end; margin: 10px 0 12px; }
 .msg-user .bubble {
@@ -761,3 +762,180 @@ svg { display: block; }
 
 .setting-value { font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; flex: none; }
 button.setting-row { width: 100%; text-align: left; background: none; border: 0; }
+
+
+/* ---- forms, inbox, delivery, artifact shell ------------------------------
+   Forms block a turn, so they read as a piece of the conversation with their
+   own weight: a raised panel, the question as a heading, the choices as chips
+   that stay thumb-sized on a 390px screen. */
+
+.form-card {
+  margin: 14px 0 6px;
+  border: 1px solid var(--accent-line);
+  border-radius: 16px;
+  background: var(--elev);
+  padding: 13px 13px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  animation: rise 0.22s var(--ease) both;
+}
+.form-card.answered,
+.form-card.cancelled {
+  border-color: var(--line);
+  background: transparent;
+  padding: 9px 12px;
+  gap: 3px;
+}
+.form-head { font-size: 14.5px; font-weight: 650; letter-spacing: -0.01em; }
+.form-answer { font-size: 12.5px; color: var(--muted); }
+.form-field { display: flex; flex-direction: column; gap: 6px; }
+.form-field[hidden] { display: none; }
+.form-label { font-size: 12.5px; font-weight: 600; color: var(--text); }
+.form-label .req { color: var(--danger, #f87171); margin-left: 3px; }
+.form-sub { font-size: 11.5px; color: var(--muted-2); margin-top: -2px; }
+.form-options { display: flex; flex-wrap: wrap; gap: 6px; }
+.form-options[data-multi="0"] { flex-direction: column; align-items: stretch; }
+.opt {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-align: left;
+  border: 1px solid var(--line-strong);
+  background: var(--soft);
+  color: var(--text);
+  border-radius: 11px;
+  padding: 8px 11px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color 0.14s var(--ease), background 0.14s var(--ease);
+}
+.opt[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.opt-label { font-weight: 550; }
+.opt-sub { font-size: 11.5px; color: var(--muted); }
+.form-custom { margin-top: 2px; }
+.form-input { font-size: 14px; }
+.form-actions { display: flex; gap: 8px; align-items: center; }
+.form-actions .btn { height: 38px; padding: 0 14px; font-size: 13px; }
+.form-external { display: inline-flex; gap: 8px; align-items: center; font-size: 12.5px; }
+.form-external .muted { color: var(--muted-2); overflow: hidden; text-overflow: ellipsis; }
+
+/* the queue sits directly above the composer, like the attachment strip */
+.inbox-bar {
+  display: flex;
+  gap: 6px;
+  padding: 0 2px 8px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.inbox-bar::-webkit-scrollbar { display: none; }
+.inbox-chip {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--line-strong);
+  border-radius: 11px;
+  background: var(--soft);
+  overflow: hidden;
+  flex: 0 0 auto;
+  max-width: 280px;
+}
+.ib-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  padding: 7px 9px;
+  cursor: pointer;
+  min-width: 0;
+}
+.ib-mode {
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--accent);
+  font-weight: 700;
+}
+.ib-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.ib-x {
+  border: 0;
+  border-left: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted-2);
+  padding: 0 8px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+}
+.ib-x svg { width: 13px; height: 13px; stroke-width: 2; }
+
+.chip.delivery { border-color: var(--accent-line); color: var(--accent); }
+.chip.delivery span { font-weight: 600; }
+.chip.delivery.queue { color: #f5b544; border-color: rgba(245, 181, 68, 0.45); }
+
+/* ---- artifact workspace shell (filled in by the artifact module) */
+.artifact-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  padding-top: env(safe-area-inset-top);
+  animation: slide-up 0.22s var(--ease) both;
+}
+.artifact-screen[hidden] { display: none; }
+.artifact-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px 6px 4px;
+  border-bottom: 1px solid var(--line);
+  min-height: 52px;
+}
+.artifact-head .icon-btn svg { transform: rotate(180deg); }
+.artifact-heading { flex: 1; min-width: 0; }
+.artifact-title { font-size: 14px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.artifact-sub { font-size: 11px; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.artifact-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 8px 12px 0;
+}
+.artifact-tabs button {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 6px 12px 8px;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+}
+.artifact-tabs button.on { color: var(--text); border-bottom-color: var(--accent); }
+.artifact-body { flex: 1; overflow: auto; padding: 12px; }
+.artifact-body pre {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre;
+  tab-size: 2;
+}
+.artifact-body.wrap pre { white-space: pre-wrap; word-break: break-word; }
+.artifact-frame {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 12px;
+  background: #fff;
+}
+.artifact-doc { font-size: 14.5px; line-height: 1.62; }

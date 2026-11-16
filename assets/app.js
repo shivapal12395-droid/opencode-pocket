@@ -1,5 +1,6 @@
 import { Api, ApiError, normalizeBase, resolveSecret } from "./api.js";
 import { renderMarkdown, escapeHtml } from "./markdown.js";
+import { formCardHtml, buildAnswer, missingRequired, applyFormConditions } from "./forms.js";
 
 /* ---------------------------------------------------------------- utils */
 
@@ -75,6 +76,14 @@ const state = {
   pendingRender: 0,
   diff: [],
   revert: null,
+  // pending + recently settled forms for the open session (question tool)
+  forms: [],
+  // prompts waiting in this session's inbox (queue)
+  inbox: [],
+  // steer = join the running turn, queue = run after it
+  delivery: store.get("delivery", "steer"),
+  // placeholders so a 1.x service worker cannot call missing hooks
+  artifacts: [],
   sheetKind: null,
   renderSignature: "",
   renderedIds: new Set(),
@@ -118,6 +127,8 @@ function cacheDom() {
   el.attachStrip = $("#attach-strip");
   el.composerHint = $("#composer-hint");
   el.jumpLatest = $("#jump-latest");
+  el.inboxBar = $("#inbox-bar");
+  el.deliveryToggle = $("#delivery-toggle");
   el.scrim = $("#scrim");
   el.sheet = $("#sheet");
   el.sheetTitle = $("#sheet-title");
@@ -344,6 +355,11 @@ function setChatHeader() {
 
 function setBusy(busy) {
   state.busy = busy;
+  if (el.deliveryToggle) {
+    el.deliveryToggle.hidden = !busy;
+    el.deliveryToggle.querySelector("span").textContent = state.delivery === "queue" ? "Queue" : "Steer";
+    el.deliveryToggle.classList.toggle("queue", state.delivery === "queue");
+  }
   el.chatStatus.hidden = !busy;
   el.chatStatus.querySelector("span").textContent = "Working";
   setConnection(busy ? "busy" : state.online ? "online" : "offline", busy ? "Working" : "Connected");
@@ -430,6 +446,10 @@ async function loadMessages() {
     state.messages = (res?.data ?? []).slice().reverse();
     state.messagesCursor = res?.cursor?.previous ?? null;
     renderMessages(firstLoad);
+    // Both are cheap and both block work if ignored: a waiting question, or a
+    // prompt still sitting in the queue.
+    loadForms();
+    loadInbox();
   } finally {
     state.messagesLoading = false;
   }
@@ -688,6 +708,7 @@ function renderFailure(err) {
 // markup costs a repaint and replays the entry animation, so it is skipped.
 function transcriptSignature() {
   const bits = [state.busy ? "1" : "0", state.lastAssistantId ?? "-"];
+  for (const f of state.forms) bits.push(f.form?.id ?? "", f.status);
   for (const m of state.messages) {
     bits.push(m.id, m.type);
     if (m.type === "assistant") {
@@ -766,6 +787,13 @@ function renderMessages(force = false) {
     else if (m.type === "model-switched") chunks.push(renderSystem(`Model · ${m.model?.id ?? ""}`, "spark"));
     else if (m.type === "location-switched") chunks.push(renderSystem("Workspace changed", "folder"));
   }
+  // Forms sit at the end of the transcript: they block the turn that produced
+  // them, so they have to be impossible to miss.
+  for (const entry of state.forms) {
+    if (!entry?.form) continue;
+    chunks.push(formCardHtml(entry.form, { status: entry.status, answer: entry.answer }));
+  }
+
   if (!chunks.length) {
     el.messages.innerHTML = `<div class="empty">${icon("spark")}<b>Fresh start</b>Ask anything, or type / for commands.</div>`;
     return;
@@ -799,6 +827,149 @@ function renderMessages(force = false) {
   if (pinned) scrollToBottom(false);
   else el.messages.scrollTop = prevScroll;
   updateJumpLatest();
+}
+
+/* -------------------------------------------------------------- forms
+ * The server can stop mid-turn and ask (Form.Info). Rendering the request as a
+ * card in the transcript is what keeps the turn alive; ignoring the
+ * form.created event is exactly how a conversation appears to hang.
+ */
+
+function upsertForm(form) {
+  const i = state.forms.findIndex((f) => f.form?.id === form.id);
+  if (i >= 0) state.forms[i] = { form, status: "pending", answer: null };
+  else state.forms.push({ form, status: "pending", answer: null });
+}
+
+function settleForm(id, status, answer) {
+  const entry = state.forms.find((f) => f.form?.id === id);
+  if (entry) {
+    entry.status = status;
+    entry.answer = answer;
+  }
+}
+
+async function loadForms() {
+  if (!state.api || !state.session) return;
+  try {
+    const list = await state.api.forms(state.session.id);
+    const settled = state.forms.filter((f) => f.status !== "pending");
+    state.forms = list.map((form) => settled.find((s) => s.form.id === form.id) ?? { form, status: "pending", answer: null });
+    renderMessages();
+  } catch {
+    // Forms are optional in older servers; never block the transcript on them.
+  }
+}
+
+async function submitForm(formID) {
+  if (!state.session) return;
+  const card = el.messages.querySelector(`.form-card[data-form="${CSS.escape(formID)}"]`);
+  const entry = state.forms.find((f) => f.form?.id === formID);
+  if (!card || !entry) return;
+
+  const missing = missingRequired(card, entry.form);
+  if (missing) {
+    toast(`Answer "${missing.title || missing.key}" first`);
+    return;
+  }
+  const answer = buildAnswer(card, entry.form);
+  try {
+    await state.api.replyForm(state.session.id, formID, answer);
+    settleForm(formID, "answered", answer);
+    haptic(10);
+    renderMessages(true);
+    scrollToBottom(true);
+  } catch (err) {
+    handleError(err, "Could not send the answer");
+  }
+}
+
+async function dismissForm(formID) {
+  if (!state.session) return;
+  try {
+    await state.api.cancelForm(state.session.id, formID);
+    settleForm(formID, "cancelled", null);
+    renderMessages(true);
+  } catch (err) {
+    handleError(err, "Could not dismiss");
+  }
+}
+
+/* --------------------------------------------------------------- inbox
+ * A prompt sent while the agent is working is either a steer (joins the run) or
+ * a queue entry (waits). The server keeps both in the session inbox, and this is
+ * the only place they can be seen, re-aimed or cancelled.
+ */
+
+const inboxItem = (raw) => raw?.item ?? raw ?? {};
+const inboxTitle = (raw) => {
+  const item = inboxItem(raw);
+  if (item.type === "user") return item.payload?.text ?? "Prompt";
+  if (item.type === "compaction") return "Compact context";
+  if (item.type === "move") return "Move session";
+  if (item.type === "synthetic") return item.payload?.description || item.payload?.text || "Note";
+  return item.type ?? "Queued";
+};
+
+async function loadInbox() {
+  if (!state.api || !state.session) return;
+  try {
+    state.inbox = await state.api.inbox(state.session.id);
+  } catch {
+    state.inbox = [];
+  }
+  renderInbox();
+}
+
+function renderInbox() {
+  if (!el.inboxBar) return;
+  const items = (state.inbox ?? []).filter((x) => x && x.id);
+  el.inboxBar.hidden = items.length === 0;
+  if (!items.length) {
+    el.inboxBar.innerHTML = "";
+    return;
+  }
+  el.inboxBar.innerHTML = items
+    .map((raw) => {
+      const delivery = raw.delivery ?? "queue";
+      const text = inboxTitle(raw);
+      const short = text.length > 46 ? text.slice(0, 45) + "..." : text;
+      return `<span class="inbox-chip" data-inbox="${escapeHtml(raw.id)}">
+        <button class="ib-main" data-inbox-toggle="${escapeHtml(raw.id)}" data-delivery="${escapeHtml(delivery)}" title="Switch between queue and steer">
+          <span class="ib-mode">${delivery === "queue" ? "Queued" : "Steer"}</span>
+          <span class="ib-text">${escapeHtml(short)}</span>
+        </button>
+        <button class="ib-x" data-inbox-cancel="${escapeHtml(raw.id)}" aria-label="Cancel">${icon("x")}</button>
+      </span>`;
+    })
+    .join("");
+}
+
+async function toggleInboxDelivery(inboxID) {
+  if (!state.session) return;
+  const raw = state.inbox.find((x) => x.id === inboxID);
+  if (!raw) return;
+  const next = (raw.delivery ?? "queue") === "queue" ? "steer" : "queue";
+  try {
+    await state.api.setInboxDelivery(state.session.id, inboxID, next);
+    raw.delivery = next;
+    renderInbox();
+    haptic(6);
+  } catch (err) {
+    handleError(err, "Could not change delivery");
+  }
+}
+
+async function cancelInboxItem(inboxID) {
+  if (!state.session) return;
+  try {
+    await state.api.cancelInbox(state.session.id, inboxID);
+    state.inbox = state.inbox.filter((x) => x.id !== inboxID);
+    renderInbox();
+    haptic(10);
+  } catch (err) {
+    handleError(err, "Could not cancel");
+  }
 }
 
 function updateJumpLatest() {
@@ -862,6 +1033,28 @@ const STREAM_FRAGMENTS = new Set([
 function handleEvent(event) {
   const type = event.type;
   const data = event.data ?? {};
+
+  // Forms and the inbox come before the open-session filter: a question can
+  // arrive for a session that is not on screen and still must be remembered.
+  if (type === "form.created" && data.form) {
+    upsertForm(data.form);
+    if (state.session?.id === data.form.sessionID && state.screen === "chat") {
+      renderMessages(true);
+      scrollToBottom(true);
+      haptic(10);
+      toast("The agent asked a question");
+    }
+    return;
+  }
+  if (type === "form.replied" || type === "form.cancelled") {
+    settleForm(data.id, type === "form.replied" ? "answered" : "cancelled", data.answer ?? null);
+    if (state.session?.id === data.sessionID) renderMessages();
+    return;
+  }
+  if (type.startsWith("session.inbox.")) {
+    if (eventBelongsToOpenSession(data)) loadInbox().catch(() => {});
+    return;
+  }
 
   if (type === "server.connected") {
     state.online = true;
@@ -1228,6 +1421,9 @@ async function sendMessage() {
     await interrupt();
     return;
   }
+  // While a turn is running the server accepts two meanings for a prompt: join
+  // the run (steer) or wait for it (queue). The composer exposes the choice.
+  const delivery = state.busy ? state.delivery : "steer";
   if (!text && !state.attachments.length) return;
 
   const files = attachmentsPayload();
@@ -1261,9 +1457,13 @@ async function sendMessage() {
         files,
       });
     } else {
-      await state.api.prompt(state.session.id, { text, files, delivery: "steer" });
+      await state.api.prompt(state.session.id, { text, files, delivery });
     }
     haptic(6);
+    if (delivery === "queue") {
+      toast("Queued — runs after this turn");
+      loadInbox().catch(() => {});
+    }
     setTimeout(() => {
       state.messages = state.messages.filter((m) => m.id !== localId);
       loadMessages().catch(() => {});
@@ -2738,7 +2938,65 @@ function bindEvents() {
     const reasoning = e.target.closest("[data-toggle-reasoning]");
     if (reasoning) {
       reasoning.closest(".reasoning")?.classList.toggle("open");
+      return;
     }
+
+    // ---- forms
+    const pick = e.target.closest(".opt[data-pick]");
+    if (pick) {
+      const card = pick.closest(".form-card");
+      const entry = state.forms.find((f) => f.form?.id === card?.dataset.form);
+      const field = entry?.form?.fields?.find((f) => f.key === pick.dataset.pick);
+      if (entry && field) {
+        if (field.type !== "multiselect") {
+          for (const other of card.querySelectorAll(`.opt[data-pick="${CSS.escape(pick.dataset.pick)}"]`)) {
+            if (other !== pick) other.setAttribute("aria-pressed", "false");
+          }
+          pick.setAttribute("aria-pressed", "true");
+        } else {
+          pick.setAttribute("aria-pressed", pick.getAttribute("aria-pressed") === "true" ? "false" : "true");
+        }
+        applyFormConditions(card, entry.form);
+      }
+      return;
+    }
+    const submit = e.target.closest("[data-form-submit]");
+    if (submit) {
+      await submitForm(submit.dataset.formSubmit);
+      return;
+    }
+    const dismiss = e.target.closest("[data-form-cancel]");
+    if (dismiss) {
+      await dismissForm(dismiss.dataset.formCancel);
+      return;
+    }
+
+    // ---- inbox
+    const inboxCancel = e.target.closest("[data-inbox-cancel]");
+    if (inboxCancel) {
+      await cancelInboxItem(inboxCancel.dataset.inboxCancel);
+      return;
+    }
+    const inboxToggle = e.target.closest("[data-inbox-toggle]");
+    if (inboxToggle) {
+      await toggleInboxDelivery(inboxToggle.dataset.inboxToggle);
+      return;
+    }
+  });
+
+  el.inboxBar?.addEventListener("click", async (e) => {
+    const cancel = e.target.closest("[data-inbox-cancel]");
+    if (cancel) return cancelInboxItem(cancel.dataset.inboxCancel);
+    const toggle = e.target.closest("[data-inbox-toggle]");
+    if (toggle) return toggleInboxDelivery(toggle.dataset.inboxToggle);
+  });
+
+  el.deliveryToggle?.addEventListener("click", () => {
+    state.delivery = state.delivery === "queue" ? "steer" : "queue";
+    store.set("delivery", state.delivery);
+    el.deliveryToggle.querySelector("span").textContent = state.delivery === "queue" ? "Queue" : "Steer";
+    el.deliveryToggle.classList.toggle("queue", state.delivery === "queue");
+    haptic(6);
   });
 
   el.messages.addEventListener("scroll", () => {
@@ -2752,6 +3010,13 @@ function bindEvents() {
   });
 
   // composer
+  el.messages.addEventListener("input", (e) => {
+    const card = e.target.closest(".form-card");
+    if (!card) return;
+    const entry = state.forms.find((f) => f.form?.id === card.dataset.form);
+    if (entry) applyFormConditions(card, entry.form);
+  });
+
   el.input.addEventListener("input", () => {
     autoGrow();
     updateSendButton();
@@ -2829,6 +3094,10 @@ async function boot() {
   applyTheme();
   bindEvents();
   el.composerHint.textContent = defaultHint();
+  if (el.deliveryToggle) {
+    el.deliveryToggle.querySelector("span").textContent = state.delivery === "queue" ? "Queue" : "Steer";
+    el.deliveryToggle.classList.toggle("queue", state.delivery === "queue");
+  }
 
   const savedBase = store.get("base", "");
   const savedSecret = store.get("secret", "");

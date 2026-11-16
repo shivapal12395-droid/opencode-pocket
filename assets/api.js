@@ -371,6 +371,74 @@ export class Api {
     });
   }
 
+  /* ------------------------------------------------------------------ forms
+   * The server pauses a turn and asks through a form (the "question" tool, and
+   * external fields). A client that ignores forms leaves that turn stuck, so
+   * these three calls are the difference between a working question tool and a
+   * conversation that never continues.
+   *
+   *   GET    /api/form / /api/session/{id}/form
+   *   POST   /api/session/{id}/form/{formID}/reply   { answer: { key: value } }
+   *   DELETE /api/session/{id}/form/{formID}
+   */
+
+  async forms(sessionID = null, { directory } = {}) {
+    const loc = sessionID ? "" : Api.located(directory);
+    const path = sessionID ? `/api/session/${sessionID}/form` : "/api/form";
+    const res = await this.request("GET", `${path}${loc ? "?" + loc : ""}`, undefined, { timeout: 15000 });
+    return res?.data ?? [];
+  }
+
+  replyForm(sessionID, formID, answer) {
+    return this.request("POST", `/api/session/${sessionID}/form/${formID}/reply`, { answer });
+  }
+
+  cancelForm(sessionID, formID) {
+    return this.request("DELETE", `/api/session/${sessionID}/form/${formID}`);
+  }
+
+  /* ------------------------------------------------------------------ inbox
+   * Every prompt lands in the session inbox first. "steer" joins the run that is
+   * already going, "queue" waits for it to finish, and the inbox is the only way
+   * to see or cancel what is waiting.
+   */
+
+  async inbox(sessionID) {
+    const res = await this.request("GET", `/api/session/${sessionID}/inbox`, undefined, { timeout: 15000 });
+    return res?.data ?? [];
+  }
+
+  setInboxDelivery(sessionID, inboxID, delivery) {
+    return this.request("PATCH", `/api/session/${sessionID}/inbox/${inboxID}`, { delivery });
+  }
+
+  cancelInbox(sessionID, inboxID) {
+    return this.request("DELETE", `/api/session/${sessionID}/inbox/${inboxID}`);
+  }
+
+  /* ------------------------------------------------------- session plumbing */
+
+  exportSession(sessionID, { sanitize = false } = {}) {
+    return this.request(
+      "GET",
+      `/api/experimental/session/${sessionID}/export${sanitize ? "?sanitize=true" : ""}`,
+      undefined,
+      { timeout: 60000 }
+    );
+  }
+
+  async vcsStatus({ directory } = {}) {
+    const loc = Api.located(directory);
+    const res = await this.request("GET", `/api/vcs/status${loc ? "?" + loc : ""}`, undefined, { timeout: 15000 });
+    return res?.data ?? res ?? null;
+  }
+
+  async vcsBranch({ directory } = {}) {
+    const loc = Api.located(directory);
+    const res = await this.request("GET", `/api/vcs/branch${loc ? "?" + loc : ""}`, undefined, { timeout: 15000 });
+    return res?.data ?? res ?? null;
+  }
+
   async models() {
     const res = await this.request("GET", "/api/model", undefined, { timeout: 20000 });
     return res?.data ?? [];

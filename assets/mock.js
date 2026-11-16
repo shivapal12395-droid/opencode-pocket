@@ -336,6 +336,12 @@ export class MockApi {
     this.seq = 100;
     this.diffs = clone(DIFFS);
     this.revert = null;
+    // pending forms, keyed by id: { form, sessionID }
+    this.formMap = new Map();
+    // queued prompts per session (delivery: "queue")
+    this.inboxMap = new Map();
+    // sessions with a turn in flight
+    this.busySessions = new Set();
   }
 
   later(fn, ms) {
@@ -404,6 +410,55 @@ export class MockApi {
 
   async messages(id) {
     return { data: clone([...(this.messageMap[id] ?? [])].reverse()), cursor: { previous: null, next: null } };
+  }
+
+  /* ---- forms: the question tool pauses the turn until it is answered ---- */
+
+  async forms(sessionID = null) {
+    return [...this.formMap.values()]
+      .filter((f) => !sessionID || f.form.sessionID === sessionID)
+      .map((f) => clone(f.form));
+  }
+
+  async replyForm(sessionID, formID, answer) {
+    const entry = this.formMap.get(formID);
+    this.formMap.delete(formID);
+    this.emit("form.replied", { id: formID, sessionID, answer });
+    // The turn continues with the answer the user picked.
+    const shown = Object.values(answer ?? {})
+      .map((v) => (Array.isArray(v) ? v.join(", ") : String(v)))
+      .join(", ");
+    this.later(() => this.finishWith(sessionID, `Thanks — going with **${shown}**.`), 220);
+    return { ok: true };
+  }
+
+  async cancelForm(sessionID, formID) {
+    this.formMap.delete(formID);
+    this.emit("form.cancelled", { id: formID, sessionID });
+    this.later(() => this.finishWith(sessionID, "Dismissed the question, so I stopped there."), 200);
+    return { ok: true };
+  }
+
+  /* ---- inbox: prompts waiting for the running turn ---- */
+
+  async inbox(sessionID) {
+    return clone(this.inboxMap.get(sessionID) ?? []);
+  }
+
+  async setInboxDelivery(sessionID, inboxID, delivery) {
+    const items = this.inboxMap.get(sessionID) ?? [];
+    const item = items.find((x) => x.id === inboxID);
+    if (item) {
+      item.delivery = delivery;
+      this.emit("session.inbox.updated", { sessionID, inboxID, delivery });
+    }
+    return { ok: true };
+  }
+
+  async cancelInbox(sessionID, inboxID) {
+    this.inboxMap.set(sessionID, (this.inboxMap.get(sessionID) ?? []).filter((x) => x.id !== inboxID));
+    this.emit("session.inbox.cancelled", { sessionID, inboxID });
+    return { ok: true };
   }
 
   async permissions() {
@@ -587,9 +642,30 @@ export class MockApi {
     };
   }
 
-  prompt(id, { text, files }) {
+  prompt(id, { text, files, delivery = "steer" }) {
     const sid = id;
+
+    // A queued prompt waits for the running turn, which is what the composer's
+    // Steer/Queue chip asks for.
+    if (delivery === "queue" && this.busySessions.has(sid)) {
+      const inboxID = "msg_inbox_" + this.seq++;
+      const item = {
+        id: inboxID,
+        sessionID: sid,
+        type: "user",
+        payload: { text },
+        delivery: "queue",
+        time: { created: now() },
+      };
+      this.inboxMap.set(sid, [...(this.inboxMap.get(sid) ?? []), item]);
+      this.emit("session.inbox.enqueued", { sessionID: sid, inboxID, item });
+      return { data: clone(item) };
+    }
+
     if (/\b(fail|error|rate.?limit|429)\b/i.test(text)) return this.failTurn(sid, text);
+
+    // The question tool: a form blocks the turn until it is answered.
+    if (/\b(ask|question|choose|which)\b/i.test(text)) return this.openForm(sid, text);
     const userMsg = {
       id: "msg_u_" + this.seq++,
       type: "user",
@@ -609,6 +685,7 @@ export class MockApi {
     this.messageMap[sid] = [...(this.messageMap[sid] ?? []), userMsg, assistant];
     this.emit("session.inbox.enqueued", { sessionID: sid, inboxID: userMsg.id, item: { type: "user", payload: { text }, delivery: "steer" } });
 
+    this.busySessions.add(sid);
     this.later(() => this.emit("session.execution.started", { sessionID: sid }), 250);
     this.later(() => {
       this.emit("session.step.started", { sessionID: sid, assistantMessageID: assistantId, agent: "build", model: MODEL, started: now() });
@@ -634,14 +711,105 @@ export class MockApi {
       this.emit("session.execution.succeeded", { sessionID: sid });
       this.messageMap[sid].push({ id: "msg_i_" + this.seq++, type: "idle", outcome: "succeeded", time: { created: now() } });
       this.emit("session.idle", { sessionID: sid });
+      this.busySessions.delete(sid);
       const s = this.sessionList.find((x) => x.id === sid);
       if (s) {
         s.title = s.title === "New session" ? text.slice(0, 60) : s.title;
         s.time.updated = now();
       }
+      this.drainQueue(sid);
     }, at + 120);
 
     return { data: { id: userMsg.id, sessionID: sid, type: "user", payload: { text }, delivery: "steer", time: { created: now() } } };
+  }
+
+  /** Pauses the turn and asks through a form, exactly like the question tool. */
+  openForm(sid, text) {
+    const formID = "frm_" + this.seq++;
+    const form = {
+      id: formID,
+      sessionID: sid,
+      title: "Which approach should I take?",
+      metadata: {},
+      fields: [
+        {
+          key: "approach",
+          type: "string",
+          title: "Approach",
+          description: "Both keep the public API the same.",
+          required: true,
+          options: [
+            { value: "patch", label: "Patch the cookie write", description: "Smallest change, ships today" },
+            { value: "refresh", label: "Add a refresh flow", description: "More code, no expiry surprises" },
+            { value: "skip", label: "Leave it for now", description: "I'll just document it" },
+          ],
+          custom: true,
+        },
+        {
+          key: "tests",
+          type: "boolean",
+          title: "Add a regression test?",
+          default: true,
+        },
+        {
+          key: "files",
+          type: "multiselect",
+          title: "Touch these files",
+          options: [
+            { value: "src/auth/session.ts", label: "session.ts" },
+            { value: "src/auth/cookies.ts", label: "cookies.ts" },
+          ],
+          minItems: 0,
+        },
+        {
+          key: "note",
+          type: "string",
+          title: "Anything else?",
+          when: [{ key: "approach", op: "eq", value: "refresh" }],
+          placeholder: "Only asked when you pick the refresh flow",
+        },
+      ],
+    };
+    const userMsg = { id: "msg_u_" + this.seq++, type: "user", text, files: [], time: { created: now() } };
+    this.messageMap[sid] = [...(this.messageMap[sid] ?? []), userMsg];
+    this.formMap.set(formID, { form, sessionID: sid });
+    this.busySessions.add(sid);
+    this.later(() => this.emit("session.execution.started", { sessionID: sid }), 200);
+    this.later(() => this.emit("form.created", { form }), 600);
+    return { data: { id: userMsg.id, sessionID: sid, type: "user", payload: { text }, delivery: "steer", time: { created: now() } } };
+  }
+
+  /** Closes a turn with a short answer (used after a form reply). */
+  finishWith(sid, text) {
+    const assistantId = "msg_a_" + this.seq++;
+    const assistant = {
+      id: assistantId,
+      type: "assistant",
+      model: MODEL,
+      agent: "build",
+      content: [{ type: "text", text, ordinal: 0 }],
+      time: { created: now(), completed: now() },
+      tokens: { input: 4200, output: 48, cache: { read: 3100, write: 0 } },
+      cost: 0.0009,
+    };
+    this.messageMap[sid] = [...(this.messageMap[sid] ?? []), assistant];
+    this.emit("session.text.started", { sessionID: sid, assistantMessageID: assistantId, ordinal: 0 });
+    this.emit("session.text.ended", { sessionID: sid, assistantMessageID: assistantId, ordinal: 0, text });
+    this.messageMap[sid].push({ id: "msg_i_" + this.seq++, type: "idle", outcome: "succeeded", time: { created: now() } });
+    this.emit("session.execution.succeeded", { sessionID: sid });
+    this.emit("session.idle", { sessionID: sid });
+    this.busySessions.delete(sid);
+    this.drainQueue(sid);
+  }
+
+  /** Runs whatever was queued while the session was busy. */
+  drainQueue(sid) {
+    const items = this.inboxMap.get(sid) ?? [];
+    if (!items.length) return;
+    const [next, ...rest] = items;
+    this.inboxMap.set(sid, rest);
+    this.emit("session.inbox.delivered", { sessionID: sid, inboxID: next.id, item: next });
+    this.later(() => this.prompt(sid, { text: next.payload?.text ?? "", delivery: "steer" }), 260);
   }
 
 /** Walks the same path a rejected provider call takes on a real server. */
