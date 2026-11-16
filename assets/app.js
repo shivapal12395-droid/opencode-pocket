@@ -67,7 +67,7 @@ const state = {
   online: false,
   demo: false,
   lastModel: store.get("lastModel", null),
-  theme: store.get("theme", "system"),
+  theme: store.get("theme", "system"), // system dark -> amoled
   enterToSend: store.get("enterToSend", false),
   sheetOpen: false,
   chatOpen: false,
@@ -129,11 +129,13 @@ function cacheDom() {
 /* ---------------------------------------------------------------- theme */
 
 function applyTheme() {
-  // auto resolves to plain dark/light; amoled is a deliberate choice, not a scheme
+  // A dark system scheme resolves to amoled: the pocket client is used on a
+  // phone, nearly all of which are OLED, so true black is the better dark.
+  // Picking Dark explicitly still gives the softer #0b0f14 palette.
   const resolved =
     state.theme === "system"
       ? window.matchMedia("(prefers-color-scheme: dark)").matches
-        ? "dark"
+        ? "amoled"
         : "light"
       : state.theme;
   document.documentElement.dataset.theme = resolved;

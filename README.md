@@ -23,9 +23,9 @@ No build step. No backend of its own. One static app that talks straight to `ope
 | --- | --- | --- |
 | <img src="docs/models.png" width="240" alt="Model picker" /> | <img src="docs/mention.png" width="240" alt="File mention search" /> | <img src="docs/session-menu.png" width="240" alt="Session actions" /> |
 
-| MCP servers | Usage | Dark theme |
+| MCP servers | Usage | AMOLED theme |
 | --- | --- | --- |
-| <img src="docs/mcp.png" width="240" alt="MCP server status" /> | <img src="docs/usage.png" width="240" alt="Token and spend summary" /> | <img src="docs/chat-dark.png" width="240" alt="Dark theme" /> |
+| <img src="docs/mcp.png" width="240" alt="MCP server status" /> | <img src="docs/usage.png" width="240" alt="Token and spend summary" /> | <img src="docs/theme-amoled.png" width="240" alt="True-black AMOLED theme" /> |
 
 | Streaming | Tool call | A failed turn |
 | --- | --- | --- |
@@ -61,7 +61,8 @@ No phone, no server, no account: **[open the demo](https://shivapal12395-droid.g
 
 ### Server view
 - **MCP servers** with live status, **providers** and their activation, **workspace files**.
-- **PWA** — Add to Home Screen, offline shell, dark / light / system, safe-area aware.
+- **PWA** - Add to Home Screen, offline shell, safe-area aware.
+- **Themes** - a dark system theme resolves to true-black AMOLED (`#000`, OLED pixels off); Dark (`#0b0f14`), Light and Auto are one tap away in Settings.
 - **Deep links** — `?base=…&secret=…` opens straight into the session list, no typing.
 - **Zero dependencies** — vanilla HTML, CSS and JS. No bundler, no framework.
 
