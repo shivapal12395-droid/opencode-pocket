@@ -1262,7 +1262,9 @@ async function loadInbox() {
 
 function renderInbox() {
   if (!el.inboxBar) return;
-  const items = (state.inbox ?? []).filter((x) => x && x.id);
+  // Only queued work belongs in the strip. A "steer" prompt joins the running
+  // turn immediately, so showing it as waiting would be a lie.
+  const items = (state.inbox ?? []).filter((x) => x && x.id && (x.delivery ?? "queue") === "queue");
   el.inboxBar.hidden = items.length === 0;
   if (!items.length) {
     el.inboxBar.innerHTML = "";
