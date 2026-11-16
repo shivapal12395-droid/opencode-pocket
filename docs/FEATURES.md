@@ -1,0 +1,235 @@
+# OpenCode features vs OpenCode Pocket
+
+A feature-by-feature audit of the official OpenCode clients and of this client.
+Compiled against **OpenCode v2.3.0** (the version running on the phone), the
+server's own OpenAPI document (139 paths, `GET /api/…`), and the official docs at
+[opencode.ai/docs](https://opencode.ai/docs).
+
+Last updated: 2026-11-17.
+
+Legend: **yes** = works end to end · **part** = works but narrower than official ·
+**no** = not implemented.
+
+---
+
+## 1. The surfaces
+
+| Surface | What it is | Official | Pocket |
+| --- | --- | --- | --- |
+| Terminal TUI | Full-screen terminal client, diffs in the timeline, tabs, command palette | yes | n/a (Pocket is the GUI) |
+| `opencode mini` | Replies print into your own shell scrollback | yes | n/a |
+| `opencode run` | One-shot prompt for scripts/CI, `--format json`, `--auto` | yes | n/a |
+| Desktop app | macOS/Windows/Linux GUI: tabs, review panel, built-in browser, GUI plugins | yes | **part** - web UI with the core chat loop |
+| Web UI | Served by the same server, password protected, pairing link + QR | yes | **yes** (this project) |
+| Mobile app | iOS beta / Android: steer sessions, voice calls, spoken results | yes | **part** - no voice, no pairing QR |
+| SDK / JS client | `@opencode/sdk`, `opencode api`, REST + SSE | yes | n/a (Pocket *is* a client) |
+| ACP | Agent Client Protocol for editor integrations | yes | n/a |
+| Plugins | Server, TUI, GUI (sidebar panels), RPC | yes | **no** |
+
+Pocket deliberately replaces the desktop/web client, not the server. Everything
+below is judged by "can I do it from a phone with this UI".
+
+---
+
+## 2. Chat and transcript
+
+| Feature | Official behaviour | Pocket |
+| --- | --- | --- |
+| Streaming text | SSE deltas, live caret | **yes** |
+| Reasoning / thought process | Collapsible reasoning blocks | **yes** |
+| Tool calls | One row per call, expandable input/output/exit code | **yes** |
+| Activity summary row | TUI/desktop collapse a run of tools+thoughts into one row; verbosity `low`/`medium`/`high` | **part** - every tool stays a separate row, no verbosity setting |
+| Diffs in the timeline | Each edit shows as a diff inline as it lands | **part** - diff chip + changes sheet; no inline diff per edit |
+| Inline line comments | Desktop review panel: comment on any line, sent back to the agent | **no** |
+| Failures | Provider reason, next step, wait time, retries as they happen | **yes** (retry *cards* only) |
+| Interrupt | Stop a running turn | **yes** |
+| Steer while running | Enter steers the active session | **yes** (sending a prompt mid-run) |
+| Queue a prompt | TUI `Ctrl+X Enter`; server keeps an inbox per session | **no** - `GET/PATCH/DELETE /api/session/{id}/inbox` unused |
+| Agent asks a question | `question` tool → a form with choices; blocks until answered | **no** - `POST /api/session/{id}/form/{formID}/reply` unused, so such a turn stalls |
+| Attachments | File picker, paste, drag; text/PNG/JPEG/GIF/WebP/PDF up to 20 MiB | **part** - camera/gallery images only, resized client-side |
+| @-mentions | `@path`, with `#20-45` line ranges | **part** - path search yes, line ranges no |
+| Slash commands | Discovered from `.opencode/commands`, `$ARGUMENTS`, `$1..$n`, `!`shell blocks | **yes** |
+| Shell mode | `!` at the start of a prompt runs it in the session | **part** - via the "Run a command" sheet, not `!` in the composer |
+| Usage per answer | Tokens, cache, cost under the turn | **yes** |
+| Markdown | Code, tables, lists, copy buttons | **yes** |
+| Mermaid | Rendered, maximisable for pan/zoom | **no** |
+| Todo list | `todowrite` tool renders as a live checklist | **part** - shows as a generic tool card |
+| Subagent runs | Child session, report arrives back in the parent | **part** - child sessions appear in the list, no linkage in the transcript |
+
+---
+
+## 3. Sessions
+
+| Feature | Official | Pocket |
+| --- | --- | --- |
+| List, search, group by workspace/project | yes | **yes** |
+| Rename / archive / unarchive / delete | yes | **yes** |
+| Tabs (several sessions at once) | yes (desktop + TUI) | **no** |
+| Recent sessions sidebar, pins, reorder | yes (desktop, experimental) | **no** |
+| Read / unread + inbox badges | yes | **no** |
+| Inbox (queued prompts, delivered work) | yes | **no** |
+| Failed-run indicator on a tab | yes | **no** (list shows nothing) |
+| Fork a session | yes | **yes** (`POST /api/session/{id}/fork`) |
+| Compact context | yes - also automatic, `keep.tokens`, `buffer`, background mode | **part** - manual only, automatic is server-side |
+| Undo / revert | `/undo` stages a rollback, `/redo` cancels, next prompt commits | **yes** (stage → keep/drop, banner) |
+| Jump to message | Search prompts inside a session, jump | **no** |
+| Export / import | `session export` (JSON, `--sanitize`), `session import` | **no** - `GET /api/experimental/session/{id}/export` unused |
+| Move a session / worktrees | Move to another directory, create/list/remove worktrees | **part** - `GET /api/worktree` used for display only |
+| Session info / metadata | yes | **yes** (info sheet: model, agent, tokens, cost, archived) |
+| Synthetic messages | Client can inject a note into the transcript | **no** - `POST /api/session/{id}/synthetic` unused |
+
+---
+
+## 4. Models, agents and configuration
+
+| Feature | Official | Pocket |
+| --- | --- | --- |
+| Model list + picker | All providers, search, reasoning variant (`#high`) | **yes** |
+| Switch model mid-session | yes | **yes** |
+| Agent picker | build / plan / general / explore + custom (`Shift+Tab` cycles) | **yes** |
+| Skills | `SKILL.md` discovery, `/skills`, load by ID, `@skill-id` | **yes** (list + activate) |
+| Saved permissions | "Allow always" rules, reviewable and deletable | **yes** |
+| Permission prompt | Allow once / always / reject, reject with feedback | **part** - no reject-with-feedback text |
+| Permission scanner behaviour | Compound commands checked per subcommand | server-side (n/a) |
+| Policies | Org-level hard deny (provider/tool/mcp/skill/plugin), managed files | server-side (n/a) |
+| Config editing | `opencode.jsonc`, `PATCH /api/experimental/config`, shell/config read | **no** |
+| Instructions (`AGENTS.md`, globs, URLs) | Loaded automatically; per-session entries visible | **no** - `…/instructions/entries` unused |
+| References | Named external dirs/repos as context | **part** - `GET /api/reference` used for the mention/list only |
+| Providers + activation | List providers, models, auth state | **yes** (read) |
+| Provider login / accounts | `auth login`, credentials, switch account, OAuth | **no** - CLI only |
+| Web search | `websearch` tool + provider choice policy | server-side; **no** UI indicator |
+| Warming | Keep model cache warm | server-side (n/a) |
+| Formatters / LSP | Run after edits | server-side (n/a) |
+| Themes | Many built-in themes, light/dark follows terminal | **yes** (AMOLED / Dark / Light / Auto) |
+| Keybinds / command palette | Fully remappable; `Ctrl+P` palette | **part** - no palette, fixed gestures |
+
+---
+
+## 5. Files and change review
+
+| Feature | Official | Pocket |
+| --- | --- | --- |
+| Changed-files sheet | Every path the session touched, +/− counts | **yes** |
+| Unified patch per file | yes | **yes** |
+| Split / inline view, collapse | yes | **part** - collapsible cards, no split view |
+| Comment on a diff line | yes (desktop review panel) | **no** |
+| File tree / workspace browser | Desktop sidebar | **part** - `fs/list` + `fs/read` for mentions |
+| Markdown preview with frontmatter | yes | **no** |
+| VCS panel | Branch, base, status, diff, init | **no** - `/api/vcs*` unused |
+| Built-in browser | Agent drives a real browser pane next to the chat | **no** (phone: the system browser) |
+| Terminal pane | Real PTY inside the app | **no** - `/api/pty`, `/api/shell` unused |
+
+---
+
+## 6. Platform, integration and plumbing
+
+| Feature | Official | Pocket |
+| --- | --- | --- |
+| Password / Basic auth | `opencode` + generated password, `OPENCODE_PASSWORD` | **yes** |
+| Pairing | One-time link + QR, 5-minute expiry, 30-day cookie | **part** - deep link `?base=&secret=` (no QR scan) |
+| Remote access | `opencode pair --remote` via OpenTunnel | **no** (phone-local by design) |
+| Multi-device | Start on desktop, pick up on phone | **part** - same server, sessions shared |
+| Offline shell | n/a (desktop app is local) | **yes** (service worker) |
+| Installable app | Native desktop/mobile app | **part** - PWA today, native wrapper planned |
+| MCP servers | List, add/remove, connect/disconnect, OAuth sign-in, resources | **part** - list + status only |
+| MCP resources | `opencode_list_mcp_resources` / read | **no** |
+| Plugins (server / TUI / GUI / RPC) | Install, list, update; GUI plugins add sidebar panels | **no** |
+| Integrations | `/connect` accounts (Console, providers, web search) | **no** |
+| Credentials | `auth export/import`, multiple accounts | **no** |
+| Usage stats | `opencode stats`, per-day/model/cost/project, JSON | **part** - session stats + rollup, no date ranges |
+| Usage limits | `GET /api/experimental/usage/limits` | **no** |
+| Scheduled runs | `POST /api/experimental/schedule` | **no** |
+| Voice | Mobile app: call a session, spoken answers | **no** |
+| Image generation | `experimental_image_generate` tool, background job | **part** - result shows as a tool card only |
+| Artifacts | `GET/POST /api/experimental/artifacts` | **no** |
+| Background shells | `POST /api/shell`, output polling | **no** |
+| Client-side MCP | `experimental/client-mcp` | **no** |
+
+---
+
+## 7. What the server offers that this UI does not touch
+
+The v2.3.0 server exposes **139 REST paths**. Pocket calls **38** of them (~27%).
+
+Used: session CRUD, messages, prompt, command, interrupt, model, agent, view,
+diff, context, fork, compact, revert (stage/commit/clear), shell (in-session),
+skill list + activate, reference, mcp list, provider list, permission get/reply,
+saved permissions list/delete, worktree list, default model, stats, fs find/list/read,
+event stream, info, project.
+
+Not used, grouped:
+
+- **Blocking a conversation**: `session/{id}/form` + `form/{formID}/reply` (the
+  `question` tool), `session/{id}/inbox` (queued prompts).
+- **Sessions**: `export`, `import`, `synthetic`, `move`, `background`, `active`,
+  `message/{id}`, `experimental/session/{id}/wait`, `…/log`.
+- **Workspace**: `vcs`, `vcs/base`, `vcs/branch`, `vcs/diff`, `vcs/status`,
+  `vcs/init`, `config`, `config/shell`, `experimental/config`, `location`,
+  `location/reload`, `project/{id}` (patch), `experimental/fs/write`, `…/fs/watch`.
+- **Execution surfaces**: `pty*`, `shell*`, `experimental/session/{id}/terminal`,
+  `experimental/persistent-pty*`.
+- **Extensibility**: `plugin`, `plugin/gui`, `plugin/check`, `plugin/update`,
+  `rpc/{id}/{method}`, `integration*`, `credential*`, `experimental/mcp/{server}`
+  (PUT/DELETE), `…/mcp/{server}/connect|disconnect`, `mcp/resource`,
+  `experimental/client-mcp`.
+- **Generation / media**: `experimental/generate`, `/image`, `/text`,
+  `/decisions`, `experimental/artifacts*`, `experimental/media/{hash}`.
+- **Accounts / limits**: `experimental/usage/limits`, `websearch`,
+  `websearch/provider`, `experimental/voice/*`, `experimental/schedule*`,
+  `experimental/migration/v1`, `pair`, `auth/connect/{code}`, `debug/*`.
+
+---
+
+## 8. Event coverage
+
+Pocket handles these SSE types: `server.connected`, `session.created|deleted|renamed|
+archived|unarchived|moved|metadata.updated`, `session.model.selected|agent.selected`,
+`session.execution.started|succeeded|failed|interrupted`, `session.idle`,
+`session.step.started`, `session.text.started|delta|ended`,
+`session.reasoning.started|delta|ended`, `session.tool.input.started|called|success|failed`,
+`session.usage.updated`, `session.revert.staged|cleared|committed`, `session.shell.ended`,
+`session.compaction.started`, `session.inbox.delivered`, `permission.asked`.
+
+Still unhandled, in rough order of user impact:
+
+1. `session.form.asked` / form replies - a question from the agent is invisible.
+2. `session.step.failed` - a failed step is only noticed at `execution.failed`.
+3. Retry events - retries are inferred from message state, not streamed.
+4. `session.instructions.updated` - instruction changes never refresh.
+5. Inbox delivery/queue events beyond the single `delivered` case.
+
+---
+
+## 9. Suggested order of work
+
+**P0 - breaks a turn**
+1. Forms / `question` tool: render the form, reply with a choice or free text.
+2. Inbox: queue a prompt while the session runs, show and cancel queued items.
+
+**P1 - daily use on a phone**
+3. Provider login (`/api/integration*`, `/api/credential*`) instead of dropping to a terminal.
+4. Export / import a session.
+5. VCS strip in the chat header: branch, dirty count, `/api/vcs/status`.
+6. MCP: connect/disconnect a server, sign in, list resources.
+7. Retry / step-failed events so the transcript never lies about progress.
+
+**P2 - parity polish**
+8. Tabs or a session switcher with unread/failed badges.
+9. Jump-to-message search within a session.
+10. Todo checklist rendering + activity summary row with verbosity.
+11. Terminal pane (PTY) and background shells.
+12. Config sheet (default model, permissions editor, instructions view).
+13. GUI plugin panels, artifacts, image generation previews.
+14. Native app shell: foreground service + boot receiver (see README).
+
+---
+
+## Sources
+
+- <https://opencode.ai/docs/> and its subpages: tools, permissions, agents, skills,
+  commands, snapshots, compaction, attachments, policies, config, cli/tui,
+  cli/commands, cli/web
+- <https://opencode.ai/desktop>, <https://opencode.ai/terminal>, <https://opencode.ai/mobile>,
+  <https://opencode.ai/product>
+- The server's OpenAPI document, `GET /api/…` (139 paths) from the installed v2.3.0
+- `assets/api.js` and `assets/app.js` in this repository, for the Pocket column

@@ -227,6 +227,10 @@ Sub-resource routes are location-scoped with `location[directory]=<path>`. Passi
 
 Pocket is a client, not a mirror of every route. It leaves out the ones that need a terminal or a desktop: PTY and persistent terminals, artifacts, scheduled jobs, voice sessions, credential and OAuth flows, plugins, and `experimental/generate`. They'd be dead weight on a phone; the TUI and the web console are better homes for them.
 
+The full audit - every official feature, what this client does about it, the 139
+server routes and which 38 are used, and the gaps worth closing first - lives in
+[docs/FEATURES.md](docs/FEATURES.md).
+
 ## Development
 
 ```bash
