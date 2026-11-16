@@ -1,6 +1,8 @@
 import { Api, ApiError, normalizeBase, resolveSecret } from "./api.js";
 import { renderMarkdown, escapeHtml } from "./markdown.js";
 import { formCardHtml, buildAnswer, missingRequired, applyFormConditions } from "./forms.js";
+import { getPrefs, setPref, onPrefs, applyPrefs, ACCENTS, DEFAULTS, densityLabel, verbosityLabel, verbosityHint, scaleLabel } from "./prefs.js";
+import { detectArtifacts, artifactCardHtml, artifactBodyHtml } from "./artifacts.js";
 
 /* ---------------------------------------------------------------- utils */
 
@@ -84,6 +86,10 @@ const state = {
   delivery: store.get("delivery", "steer"),
   // placeholders so a 1.x service worker cannot call missing hooks
   artifacts: [],
+  prefs: getPrefs(),
+  artifacts: [],
+  artifact: null,
+  artifactTab: "preview",
   sheetKind: null,
   renderSignature: "",
   renderedIds: new Set(),
@@ -129,6 +135,13 @@ function cacheDom() {
   el.jumpLatest = $("#jump-latest");
   el.inboxBar = $("#inbox-bar");
   el.deliveryToggle = $("#delivery-toggle");
+  el.artifact = $("#artifact");
+  el.artifactTitle = $("#artifact-title");
+  el.artifactSub = $("#artifact-sub");
+  el.artifactBody = $("#artifact-body");
+  el.artifactTabs = $("#artifact-tabs");
+  el.artifactBack = $("#artifact-back");
+  el.artifactMore = $("#artifact-more");
   el.scrim = $("#scrim");
   el.sheet = $("#sheet");
   el.sheetTitle = $("#sheet-title");
@@ -345,6 +358,141 @@ function renderSessions() {
 
 /* ---------------------------------------------------------------- chat */
 
+/* ------------------------------------------------------ clipboard helpers */
+
+async function copyText(text, label = "Copied") {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(label);
+    haptic(6);
+    return true;
+  } catch {
+    // WebViews without clipboard permission: fall back to a hidden textarea.
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.append(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+      toast(label);
+      return true;
+    } catch {
+      toast("Copy failed");
+      return false;
+    }
+  }
+}
+
+function downloadText(name, text, type = "text/markdown") {
+  const blob = new Blob([text], { type: type + ";charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+  toast("Saved " + name);
+}
+
+function markdownOf(m) {
+  const parts = (m.content ?? []).filter((p) => p.type === "text");
+  return parts.map((p) => p.text).join("\n\n").trim();
+}
+
+async function shareText(text) {
+  if (navigator.share) {
+    try {
+      await navigator.share({ text });
+      return;
+    } catch {}
+  }
+  await copyText(text, "Copied to share");
+}
+
+/** Re-asks the prompt that produced this answer. The server has no separate
+ *  regenerate route, so this is an honest re-run rather than a fake one. */
+async function askAgain(m) {
+  if (!state.session) return;
+  if (state.busy) {
+    toast("Wait for this turn to finish");
+    return;
+  }
+  const idx = state.messages.findIndex((x) => x.id === m.id);
+  const user = [...state.messages.slice(0, idx === -1 ? state.messages.length : idx)].reverse().find((x) => x.type === "user");
+  if (!user?.text) {
+    toast("No prompt to repeat");
+    return;
+  }
+  try {
+    await state.api.prompt(state.session.id, { text: user.text, delivery: "steer" });
+    haptic(8);
+    toast("Asked again");
+    setBusy(true);
+    setTimeout(() => loadMessages().catch(() => {}), 900);
+  } catch (err) {
+    handleError(err, "Could not repeat that prompt");
+  }
+}
+
+function openMessageSheet(m) {
+  const isAssistant = m.type === "assistant";
+  openSheet({
+    title: isAssistant ? "Answer" : "Prompt",
+    body: (root) => {
+      root.innerHTML = `<div class="sheet-list">
+        ${sheetRow({ iconName: "copy", title: "Copy text", attrs: "data-mact=copy" })}
+        ${isAssistant ? sheetRow({ iconName: "code", title: "Copy as Markdown", attrs: "data-mact=copy-md" }) : ""}
+        ${isAssistant ? sheetRow({ iconName: "save", title: "Save as .md", attrs: "data-mact=save" }) : ""}
+        ${isAssistant ? sheetRow({ iconName: "share", title: "Share", attrs: "data-mact=share" }) : ""}
+        ${isAssistant ? sheetRow({ iconName: "rotate", title: "Ask again", sub: "Re-runs the same prompt", attrs: "data-mact=regen" }) : ""}
+        ${sheetRow({ iconName: "edit", title: isAssistant ? "Copy into composer" : "Edit and resend", attrs: "data-mact=edit" })}
+      </div>`;
+      root.addEventListener("click", async (e) => {
+        const row = e.target.closest("[data-mact]");
+        if (!row) return;
+        const act = row.dataset.mact;
+        const text = messageText(m);
+        closeSheet();
+        if (act === "copy") return copyText(text);
+        if (act === "copy-md" && isAssistant) await copyText(markdownOf(m), "Markdown copied");
+        if (act === "save" && isAssistant) {
+          const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-");
+          downloadText(`opencode-answer-${stamp}.md`, markdownOf(m));
+        }
+        if (act === "share") return shareText(text);
+        if (act === "regen") return askAgain(m);
+        if (act === "edit") {
+          el.input.value = text;
+          autoGrow();
+          updateSendButton();
+          el.input.focus();
+          toast("In the composer");
+        }
+      });
+    },
+  });
+}
+
+function handleMessageAction(action, msgID) {
+  const m = state.messages.find((x) => x.id === msgID);
+  if (!m) return;
+  if (action === "copy-msg") return copyText(messageText(m), "Copied");
+  if (action === "edit-msg") {
+    el.input.value = m.text ?? "";
+    autoGrow();
+    updateSendButton();
+    el.input.focus();
+    toast("Edit and send");
+    return;
+  }
+  if (action === "regen") return askAgain(m);
+  if (action === "more-msg") return openMessageSheet(m);
+}
+
 function setChatHeader() {
   const s = state.session;
   if (!s) return;
@@ -504,7 +652,10 @@ function toolInput(part) {
 }
 
 function contentToText(content) {
-  return (content ?? [])
+  // The schema says array; a defensive string branch keeps one odd tool result
+  // from blanking the whole transcript.
+  if (!Array.isArray(content)) return typeof content === "string" ? content : "";
+  return content
     .map((c) => {
       if (c.type === "text") return c.text;
       if (c.type === "file") return `[file] ${c.name || c.uri}${c.mime ? ` · ${c.mime}` : ""}`;
@@ -587,20 +738,180 @@ function renderReasoning(part, key) {
     </div>`;
 }
 
+/* ------------------------------------------------------- activity rows
+ * A coding turn is mostly tool calls. Showing every one as its own card turned
+ * the transcript into a log; grouping a run of them behind one line ("Worked ·
+ * 4 steps") is what the desktop and TUI do, and what makes the answer readable.
+ * Verbosity is a local preference: low = one row, medium = grouped with results
+ * folded, high = the old, fully inline log.
+ */
+
+function toolVerb(part) {
+  const name = String(part.name || "").toLowerCase();
+  if (/shell|bash|command/.test(name)) return "ran";
+  if (/^read|cat/.test(name)) return "read";
+  if (/edit|write|patch|apply/.test(name)) return "edited";
+  if (/grep|glob|search|find|list/.test(name)) return "searched";
+  if (/webfetch|fetch|web/.test(name)) return "fetched";
+  if (/question|ask/.test(name)) return "asked";
+  return "used";
+}
+
+function activitySummary(items) {
+  const counts = new Map();
+  let failed = 0;
+  for (const { part } of items) {
+    if (part.type !== "tool") continue;
+    counts.set(toolVerb(part), (counts.get(toolVerb(part)) ?? 0) + 1);
+    if (part.state?.status === "error") failed += 1;
+  }
+  const bits = [...counts.entries()].map(([verb, n]) => `${verb} ${n}`);
+  if (failed) bits.push(`${failed} failed`);
+  return bits.join(" · ");
+}
+
+function renderActivity(items, m, streaming) {
+  const verbosity = state.prefs.verbosity;
+  const key = `${m.id}:a:${items[0].idx}`;
+  const tools = items.filter((i) => i.part.type === "tool");
+  const reasoning = items.filter((i) => i.part.type === "reasoning");
+
+  // high: no grouping at all, exactly as the server described it
+  if (verbosity === "high") {
+    return items
+      .map((i) =>
+        i.part.type === "tool" ? renderTool(i.part) : renderReasoning(i.part, `${m.id}:r:${i.part.ordinal ?? i.idx}`)
+      )
+      .join("");
+  }
+
+  const live = streaming && items.some((i) => i.part.type === "tool" && toolStatus(i.part) === "running");
+  const steps = tools.length + (reasoning.length ? 1 : 0);
+  const title = live ? "Working" : steps === 1 ? "1 step" : `${steps} steps`;
+  const sub = activitySummary(items);
+  const body =
+    verbosity === "low"
+      ? tools.map(renderTool).join("")
+      : items
+          .map((i) =>
+            i.part.type === "tool" ? renderTool(i.part) : renderReasoning(i.part, `${m.id}:r:${i.part.ordinal ?? i.idx}`)
+          )
+          .join("");
+
+  return `<div class="activity${live ? " live" : ""}" data-activity="${escapeHtml(key)}">
+    <button class="activity-head" data-toggle-activity="${escapeHtml(key)}" aria-expanded="false">
+      <span class="act-dot${live ? " live" : ""}"></span>
+      <span class="act-title">${escapeHtml(title)}</span>
+      ${sub ? `<span class="act-sub">${escapeHtml(sub)}</span>` : ""}
+      ${icon("chevron", "caret")}
+    </button>
+    <div class="activity-body">${body}</div>
+  </div>`;
+}
+
+/* ------------------------------------------------------- message actions */
+
+function messageText(m) {
+  if (m.type === "user") return m.text ?? "";
+  return (m.content ?? [])
+    .filter((p) => p.type === "text")
+    .map((p) => p.text)
+    .join("\n\n")
+    .trim();
+}
+
+function assistantActions(m) {
+  const id = escapeHtml(m.id);
+  return `<div class="msg-actions" data-for="${id}">
+    <button data-act="copy-msg" data-msg-id="${id}" aria-label="Copy answer">${icon("copy")}</button>
+    <button data-act="regen" data-msg-id="${id}" aria-label="Regenerate">${icon("rotate")}</button>
+    <button data-act="more-msg" data-msg-id="${id}" aria-label="More actions">${icon("more")}</button>
+  </div>`;
+}
+
+function userActions(m) {
+  const id = escapeHtml(m.id);
+  return `<div class="msg-actions user-actions" data-for="${id}">
+    <button data-act="copy-msg" data-msg-id="${id}" aria-label="Copy prompt">${icon("copy")}</button>
+    <button data-act="edit-msg" data-msg-id="${id}" aria-label="Edit and resend">${icon("edit")}</button>
+  </div>`;
+}
+
+function stamp(m) {
+  const t = m.time?.created;
+  if (!t) return "";
+  const d = new Date(t);
+  return `<span class="msg-time">${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}</span>`;
+}
+
+/* --------------------------------------------------------- follow-up chips
+ * Only offered when the answer gives a reason to: code, a failure, or a tool
+ * that changed files. Generic "tell me more" chips are noise.
+ */
+
+function followUpsFor(m) {
+  if (!state.prefs.showFollowUps) return "";
+  if (m.type !== "assistant" || m.id !== state.lastAssistantId || state.busy) return "";
+  const text = messageText(m);
+  if (!text) return "";
+
+  const hasCode = (m.content ?? []).some((p) => p.type === "text" && /```/.test(p.text ?? ""));
+  const hasError = /error|failed|exception|traceback|429|timed out/i.test(text);
+  const editedFiles = (m.content ?? []).some(
+    (p) => p.type === "tool" && /edit|write|patch/i.test(p.name ?? "") && p.state?.status === "completed"
+  );
+  const ranShell = (m.content ?? []).some((p) => p.type === "tool" && /shell|bash/i.test(p.name ?? ""));
+
+  const chips = [];
+  if (hasCode) chips.push(["Explain this code", "Explain the code above, step by step, in two short paragraphs."]);
+  if (hasCode) chips.push(["Add tests", "Write tests for the code above. Use the project's existing test framework."]);
+  if (editedFiles) chips.push(["Review the diff", "Review the changes you just made and call out anything risky."]);
+  if (hasError) chips.push(["Debug this", "Find the root cause of that failure and propose the smallest safe fix."]);
+  if (ranShell) chips.push(["Run it again", "Run that command again and show me the output."]);
+  if (!chips.length) chips.push(["Go deeper", "Go one level deeper on the most important part of that answer."]);
+  chips.push(["Continue", "Continue from where you left off."]);
+
+  return `<div class="follow-ups">${chips
+    .slice(0, 3)
+    .map(
+      ([label, prompt]) =>
+        `<button class="follow-chip" data-follow="${escapeHtml(prompt)}">${escapeHtml(label)}</button>`
+    )
+    .join("")}</div>`;
+}
+
 function renderAssistant(m) {
   const parts = messageParts(m);
   const streaming = state.busy && m.id === state.lastAssistantId;
-  const html = parts
-    .map((part, idx) => {
-      if (part.type === "reasoning") {
-        return renderReasoning(part, `${m.id}:r:${part.ordinal ?? idx}`);
-      }
+
+  // Group a run of tool/reasoning parts so the prose stays the spine of the
+  // transcript; a text part always breaks the run.
+  const blocks = [];
+  let run = [];
+  const flushRun = () => {
+    if (run.length) {
+      blocks.push({ kind: "activity", items: run });
+      run = [];
+    }
+  };
+  parts.forEach((part, idx) => {
+    if (part.type === "tool" || part.type === "reasoning") run.push({ part, idx });
+    else {
+      flushRun();
+      blocks.push({ kind: "part", part, idx });
+    }
+  });
+  flushRun();
+
+  const html = blocks
+    .map((b) => {
+      if (b.kind === "activity") return renderActivity(b.items, m, streaming);
+      const { part, idx } = b;
       if (part.type === "text") {
         const key = `${m.id}:t:${part.ordinal ?? idx}`;
         const caret = streaming && idx === parts.length - 1 ? `<span class="stream-caret"></span>` : "";
         return `<div class="md" data-part="${escapeHtml(key)}">${renderMarkdown(part.text)}${caret}</div>`;
       }
-      if (part.type === "tool") return renderTool(part);
       return "";
     })
     .join("");
@@ -616,10 +927,15 @@ function renderAssistant(m) {
   const empty =
     !html && !failure && streaming ? `<div class="typing-row"><span class="typing"><i></i><i></i><i></i></span></div>` : "";
 
+  const footer = streaming ? "" : `${usageLine(m)}${followUpsFor(m)}`;
+
   return `
     <div class="msg msg-assistant" data-msg="${escapeHtml(m.id)}">
       <div class="assistant-body">${html}${retry}${failure}${empty}</div>
-      ${streaming ? "" : usageLine(m)}
+      ${artifactCards(m)}
+      ${stamp(m)}
+      ${streaming ? "" : assistantActions(m)}
+      ${footer}
     </div>`;
 }
 
@@ -646,6 +962,8 @@ function renderUser(m) {
             : ""
         }
       </div>
+      ${stamp(m)}
+      ${userActions(m)}
     </div>`;
 }
 
@@ -707,7 +1025,13 @@ function renderFailure(err) {
 // Cheap projection of everything the markup depends on. Rebuilding identical
 // markup costs a repaint and replays the entry animation, so it is skipped.
 function transcriptSignature() {
-  const bits = [state.busy ? "1" : "0", state.lastAssistantId ?? "-"];
+  const bits = [
+    state.busy ? "1" : "0",
+    state.lastAssistantId ?? "-",
+    state.prefs.verbosity,
+    state.prefs.timestamps ? "ts" : "",
+    state.prefs.showFollowUps ? "fu" : "",
+  ];
   for (const f of state.forms) bits.push(f.form?.id ?? "", f.status);
   for (const m of state.messages) {
     bits.push(m.id, m.type);
@@ -753,9 +1077,13 @@ function renderMessages(force = false) {
     return;
   }
   state.renderSignature = signature;
+  // Artifact detection is memoised per message, so this stays cheap even while
+  // a long answer streams in.
+  state.artifacts = detectArtifacts(state.messages);
   const prevScroll = el.messages.scrollTop;
   const openTools = new Set($$(".tool-card.open", el.messages).map((n) => n.dataset.tool));
   const openReasoning = new Set($$(".reasoning.open", el.messages).map((n) => n.dataset.reasoning));
+  const openActivity = new Set($$(".activity.open", el.messages).map((n) => n.dataset.activity));
 
   const chunks = [];
 
@@ -810,6 +1138,7 @@ function renderMessages(force = false) {
   el.messages.innerHTML = chunks.join("");
   for (const n of $$(".tool-card", el.messages)) if (openTools.has(n.dataset.tool)) n.classList.add("open");
   for (const n of $$(".reasoning", el.messages)) if (openReasoning.has(n.dataset.reasoning)) n.classList.add("open");
+  for (const n of $$(".activity", el.messages)) if (openActivity.has(n.dataset.activity)) n.classList.add("open");
 
   // Only messages that arrive while the conversation is open play the entry
   // animation. A freshly opened session renders at once, with no fade.
@@ -1611,6 +1940,155 @@ function openChangesSheet() {
 }
 
 /* --------------------------------------------------------------- mentions */
+
+/* ------------------------------------------------------------- artifacts
+ * Detected from what the model actually produced: a real file, a page, a
+ * document, a diff, a diagram. The card lives in the transcript; opening it
+ * takes over the screen and leaves the conversation exactly where it was.
+ */
+
+const artifactExt = (a) =>
+  a.language === "ts" || a.language === "tsx"
+    ? "ts"
+    : a.language === "py"
+      ? "py"
+      : a.language === "html"
+        ? "html"
+        : a.language === "css"
+          ? "css"
+          : a.language === "json"
+            ? "json"
+            : a.language === "diff" || a.language === "patch"
+              ? "diff"
+              : "txt";
+
+function artifactCards(m) {
+  const list = (state.artifacts ?? []).filter((a) => a.messageID === m.id);
+  if (!list.length) return "";
+  return `<div class="artifact-cards">${list.map(artifactCardHtml).join("")}</div>`;
+}
+
+function artifactSubtitle(a) {
+  const kind =
+    a.kind === "doc"
+      ? "Document"
+      : a.kind === "html"
+        ? "Live preview"
+        : a.kind === "diagram"
+          ? "Diagram"
+          : a.kind === "diff"
+            ? "Diff"
+            : a.language || "Code";
+  return [kind, a.lines ? a.lines + " lines" : "", a.version > 1 ? "v" + a.version : ""].filter(Boolean).join(" · ");
+}
+
+function renderArtifact() {
+  const a = state.artifact;
+  if (!a || !el.artifactBody) return;
+  const tab = state.artifactTab;
+  el.artifactBody.innerHTML = artifactBodyHtml(a, {
+    tab,
+    wrap: state.prefs.codeWrap,
+    numbers: state.prefs.codeLineNumbers,
+  });
+  el.artifactBody.classList.toggle("wrap", !!state.prefs.codeWrap);
+  for (const b of $$("#artifact-tabs button", el.artifact)) {
+    b.classList.toggle("on", b.dataset.atab === tab);
+  }
+  el.artifactTitle.textContent = a.title;
+  el.artifactSub.textContent = artifactSubtitle(a);
+}
+
+function openArtifact(a) {
+  if (!a || !el.artifact) return;
+  state.artifact = a;
+  state.artifactTab = a.kind === "diff" ? "code" : "preview";
+  el.artifact.hidden = false;
+  renderArtifact();
+  haptic(8);
+  history.pushState({ artifact: true }, "");
+}
+
+function closeArtifact(fromPop = false) {
+  if (!state.artifact) return;
+  // Hand the pop back to the browser and let popstate do the closing, exactly
+  // like the sheet. Clearing state here would make popstate think it should
+  // close the whole conversation instead.
+  if (!fromPop) {
+    history.back();
+    return;
+  }
+  state.artifact = null;
+  el.artifact.hidden = true;
+}
+
+function artifactActions() {
+  const a = state.artifact;
+  if (!a) return;
+  openSheet({
+    title: a.title,
+    body: (root) => {
+      root.innerHTML = `<div class="sheet-list">
+        ${sheetRow({ iconName: "copy", title: "Copy source", attrs: "data-aact=copy" })}
+        ${sheetRow({ iconName: "download", title: "Save file", attrs: "data-aact=save" })}
+        ${sheetRow({
+          iconName: "wrap",
+          title: "Line wrap",
+          sub: state.prefs.codeWrap ? "On" : "Off",
+          attrs: "data-aact=wrap",
+        })}
+        ${sheetRow({
+          iconName: "queue",
+          title: "Line numbers",
+          sub: state.prefs.codeLineNumbers ? "On" : "Off",
+          attrs: "data-aact=numbers",
+        })}
+        ${a.kind === "html" ? sheetRow({ iconName: "refresh", title: "Reload preview", attrs: "data-aact=reload" }) : ""}
+        ${a.kind === "code" || a.kind === "diff" ? sheetRow({ iconName: "code", title: "Show code", attrs: "data-aact=tab-code" }) : ""}
+        ${sheetRow({ iconName: "x", title: "Close", attrs: "data-aact=close" })}
+      </div>`;
+      root.addEventListener("click", (e) => {
+        const row = e.target.closest("[data-aact]");
+        if (!row) return;
+        const act = row.dataset.aact;
+        closeSheet();
+        if (act === "copy") copyText(a.code ?? a.doc ?? "", "Source copied");
+        if (act === "save") {
+          const name = (a.title || "artifact").replace(/[^\w.-]+/g, "-");
+          downloadText(name + "." + artifactExt(a), a.code ?? a.doc ?? "", "text/plain");
+        }
+        if (act === "wrap") {
+          setPref("codeWrap", !state.prefs.codeWrap);
+          renderArtifact();
+        }
+        if (act === "numbers") {
+          setPref("codeLineNumbers", !state.prefs.codeLineNumbers);
+          renderArtifact();
+        }
+        if (act === "reload") renderArtifact();
+        if (act === "tab-code") {
+          state.artifactTab = "code";
+          renderArtifact();
+        }
+        if (act === "close") closeArtifact();
+      });
+    },
+  });
+}
+
+/** Opens a code block in the artifact workspace (same surface as artifacts). */
+function openCodeViewer(block) {
+  if (!block) return;
+  const lang = block.dataset.lang || "code";
+  const code = block.querySelector("code")?.textContent ?? "";
+  openArtifact({
+    kind: "code",
+    title: `${lang} snippet`,
+    language: lang,
+    code,
+    source: "conversation",
+  });
+}
 
 async function openMentionSheet(initial = "") {
   if (!state.session) return;
@@ -2630,6 +3108,162 @@ function sheetSettingRow(iconName, title, sub, id) {
     `</button>`;
 }
 
+/* ----------------------------------------------------------- preferences
+ * Everything here is deliberately local to Pocket. None of it changes what the
+ * agent can do — that lives in the server's opencode.jsonc, which Pocket only
+ * reads. The split matters: someone tuning their type size should never touch
+ * a permission rule.
+ */
+
+function prefToggleRow(name, title, sub) {
+  const on = !!state.prefs[name];
+  return `<div class="setting-row">
+    <div class="setting-text"><div class="setting-title">${escapeHtml(title)}</div><div class="setting-sub">${escapeHtml(sub)}</div></div>
+    <button class="switch ${on ? "on" : ""}" data-pref-toggle="${name}" aria-label="${escapeHtml(title)}"></button>
+  </div>`;
+}
+
+function prefSegRow(title, sub, name, options, current) {
+  return `<div class="setting-row">
+    <div class="setting-text"><div class="setting-title">${escapeHtml(title)}</div><div class="setting-sub">${escapeHtml(sub)}</div></div>
+    <div class="seg" data-pref-seg="${name}">
+      ${options
+        .map(
+          ([value, label]) =>
+            `<button data-pref-value="${value}" class="${current === value ? "on" : ""}">${escapeHtml(label)}</button>`
+        )
+        .join("")}
+    </div>
+  </div>`;
+}
+
+function openPrefsStudio() {
+  const p = state.prefs;
+  openSheet({
+    kind: "prefs",
+    title: "Preferences",
+    body: (root) => {
+      root.innerHTML = `
+        <div class="prefs-section">
+          <div class="prefs-head">Appearance</div>
+          ${prefSegRow("Theme", "Black is true black on OLED", "theme", [["system", "Auto"], ["amoled", "Black"], ["dark", "Dark"], ["light", "Light"]], state.theme)}
+          <div class="setting-row">
+            <div class="setting-text"><div class="setting-title">Accent</div><div class="setting-sub">Buttons, links, active states</div></div>
+            <div class="accent-row">
+              ${Object.entries(ACCENTS)
+                .map(
+                  ([key, a]) =>
+                    `<button class="accent-dot ${p.accent === key ? "on" : ""}" data-accent="${key}" style="--dot:${a.accent}" aria-label="${key}"></button>`
+                )
+                .join("")}
+            </div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-text"><div class="setting-title">Text size</div><div class="setting-sub">${scaleLabel(p.fontScale)}</div></div>
+            <div class="stepper">
+              <button data-size="font" data-step="-1" aria-label="Smaller text">A−</button>
+              <button data-size="font" data-step="1" aria-label="Larger text">A+</button>
+            </div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-text"><div class="setting-title">Code size</div><div class="setting-sub">${scaleLabel(p.codeScale)}</div></div>
+            <div class="stepper">
+              <button data-size="code" data-step="-1" aria-label="Smaller code">A−</button>
+              <button data-size="code" data-step="1" aria-label="Larger code">A+</button>
+            </div>
+          </div>
+          ${prefSegRow("Reading mode", "How much of the work you see", "density", [["comfortable", "Comfortable"], ["compact", "Compact"], ["focus", "Focus"]], p.density)}
+          ${prefToggleRow("timestamps", "Timestamps", "Show the time next to each message")}
+          ${prefToggleRow("reducedMotion", "Reduced motion", "No transitions or entry animations")}
+        </div>
+
+        <div class="prefs-section">
+          <div class="prefs-head">Chat</div>
+          ${prefSegRow("Activity detail", verbosityHint[p.verbosity] ?? "", "verbosity", [["low", "Low"], ["medium", "Medium"], ["high", "High"]], p.verbosity)}
+          ${prefToggleRow("toolOpen", "Tool cards start open", "Show output without tapping")}
+          ${prefToggleRow("showFollowUps", "Suggested follow-ups", "Chips under a finished answer")}
+          ${prefToggleRow("autoScroll", "Follow the answer", "Keep scrolling as new text arrives")}
+          ${prefToggleRow("keepDraft", "Keep draft", "Restore an unsent prompt after a restart")}
+        </div>
+
+        <div class="prefs-section">
+          <div class="prefs-head">Code</div>
+          ${prefToggleRow("codeWrap", "Wrap long lines", "Both in the transcript and the viewer")}
+          ${prefToggleRow("codeLineNumbers", "Line numbers", "In code blocks and the artifact viewer")}
+        </div>
+
+        <div class="prefs-section">
+          <div class="prefs-head">Composer</div>
+          ${prefToggleRow("enterToSend", "Enter sends", "Shift+Enter for a new line")}
+        </div>
+
+        <div class="prefs-foot">
+          <button class="btn btn-ghost" data-pref-reset>Restore defaults</button>
+        </div>`;
+
+      root.onclick = (e) => {
+        const theme = e.target.closest("[data-pref-value]");
+        if (theme) {
+          const group = theme.closest("[data-pref-seg]")?.dataset.prefSeg;
+          if (group === "theme") {
+            state.theme = theme.dataset.prefValue;
+            store.set("theme", state.theme);
+            setPref("theme", state.theme);
+            applyTheme();
+          } else {
+            setPref(group, theme.dataset.prefValue);
+          }
+          state.prefs = getPrefs();
+          openPrefsStudio();
+          return;
+        }
+
+        const accent = e.target.closest("[data-accent]");
+        if (accent) {
+          setPref("accent", accent.dataset.accent);
+          state.prefs = getPrefs();
+          openPrefsStudio();
+          return;
+        }
+
+        const step = e.target.closest("[data-size]");
+        if (step) {
+          const which = step.dataset.size === "code" ? "codeScale" : "fontScale";
+          const stepSize = step.dataset.size === "code" ? 0.05 : 0.04;
+          const next = Math.min(1.3, Math.max(0.88, Number((state.prefs[which] + Number(step.dataset.step) * stepSize).toFixed(2))));
+          setPref(which, next);
+          state.prefs = getPrefs();
+          openPrefsStudio();
+          return;
+        }
+
+        const toggle = e.target.closest("[data-pref-toggle]");
+        if (toggle) {
+          const name = toggle.dataset.prefToggle;
+          setPref(name, !state.prefs[name]);
+          if (name === "enterToSend") {
+            state.enterToSend = !state.enterToSend;
+            store.set("enterToSend", state.enterToSend);
+          }
+          state.prefs = getPrefs();
+          openPrefsStudio();
+          return;
+        }
+
+        if (e.target.closest("[data-pref-reset]")) {
+          for (const [k, v] of Object.entries(DEFAULTS)) setPref(k, v);
+          state.prefs = getPrefs();
+          state.theme = state.prefs.theme;
+          store.set("theme", state.theme);
+          applyTheme();
+          openPrefsStudio();
+          toast("Defaults restored");
+        }
+      };
+    },
+  });
+}
+
 function openSettings() {
   openSheet({
     title: "Settings",
@@ -2647,10 +3281,7 @@ function openSettings() {
               <button data-theme="amoled" class="${theme === "amoled" ? "on" : ""}">Black</button>
             </div>
           </div>
-          <div class="setting-row">
-            <div class="setting-text"><div class="setting-title">Enter to send</div><div class="setting-sub">Enter sends, Shift+Enter newline</div></div>
-            <button class="switch ${state.enterToSend ? "on" : ""}" id="enter-toggle" aria-label="Toggle enter to send"></button>
-          </div>
+          ${sheetSettingRow("settings", "Preferences", "Type size, accent, reading mode, code", "open-prefs")}
           <div class="setting-row">
             <div class="setting-text"><div class="setting-title">Server</div><div class="setting-sub">${escapeHtml(state.demo ? "Demo mode · fake data, no server" : state.base)}</div></div>
             <span class="si-icon" style="color:var(--accent)">${icon("wifi")}</span>
@@ -2692,13 +3323,9 @@ function openSettings() {
         if (themeBtn) {
           state.theme = themeBtn.dataset.theme;
           store.set("theme", state.theme);
+          setPref("theme", state.theme);
           applyTheme();
           for (const b of $$("#theme-seg button", root)) b.classList.toggle("on", b === themeBtn);
-        }
-        if (e.target.closest("#enter-toggle")) {
-          state.enterToSend = !state.enterToSend;
-          store.set("enterToSend", state.enterToSend);
-          e.target.closest("#enter-toggle").classList.toggle("on", state.enterToSend);
         }
         if (e.target.closest("#install-app")) {
           deferredInstall?.prompt?.();
@@ -2708,6 +3335,10 @@ function openSettings() {
         if (e.target.closest("#edit-conn")) {
           closeSheet();
           setTimeout(openConnectionSheet, 220);
+        }
+        if (e.target.closest("#open-prefs")) {
+          openPrefsStudio();
+          return;
         }
         if (e.target.closest("#saved-permissions")) {
           openSavedPermissionsSheet();
@@ -2941,6 +3572,50 @@ function bindEvents() {
       return;
     }
 
+    const activity = e.target.closest("[data-toggle-activity]");
+    if (activity) {
+      const box = activity.closest(".activity");
+      box?.classList.toggle("open");
+      activity.setAttribute("aria-expanded", box?.classList.contains("open") ? "true" : "false");
+      return;
+    }
+
+    // code block controls
+    const wrapBtn = e.target.closest("[data-code-wrap]");
+    if (wrapBtn) {
+      wrapBtn.closest(".code-block")?.classList.toggle("wrap");
+      return;
+    }
+    const openBtn = e.target.closest("[data-code-open]");
+    if (openBtn) {
+      openCodeViewer(openBtn.closest(".code-block"));
+      return;
+    }
+
+    // follow-up chips put a ready-made prompt in the composer
+    const follow = e.target.closest("[data-follow]");
+    if (follow) {
+      el.input.value = follow.dataset.follow;
+      autoGrow();
+      updateSendButton();
+      el.input.focus();
+      haptic(6);
+      return;
+    }
+
+    const openCard = e.target.closest("[data-artifact]");
+    if (openCard) {
+      const a = state.artifacts.find((x) => x.id === openCard.dataset.artifact);
+      if (a) openArtifact(a);
+      return;
+    }
+
+    const act = e.target.closest("[data-act]");
+    if (act) {
+      handleMessageAction(act.dataset.act, act.dataset.msgId);
+      return;
+    }
+
     // ---- forms
     const pick = e.target.closest(".opt[data-pick]");
     if (pick) {
@@ -3072,9 +3747,20 @@ function bindEvents() {
     }
   });
 
-  // back button
+  // artifact workspace
+  el.artifactBack?.addEventListener("click", () => closeArtifact(false));
+  el.artifactMore?.addEventListener("click", artifactActions);
+  el.artifactTabs?.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-atab]");
+    if (!b) return;
+    state.artifactTab = b.dataset.atab;
+    renderArtifact();
+  });
+
+  // back button: artifact, then sheet, then the conversation
   window.addEventListener("popstate", () => {
-    if (state.sheetOpen) closeSheet(true);
+    if (state.artifact) closeArtifact(true);
+    else if (state.sheetOpen) closeSheet(true);
     else if (state.chatOpen) closeChat(true);
   });
 
@@ -3091,8 +3777,17 @@ function bindEvents() {
 
 async function boot() {
   cacheDom();
+  applyPrefs(state.prefs);
   applyTheme();
   bindEvents();
+  onPrefs((prefs) => {
+    state.prefs = prefs;
+    if (prefs.theme && prefs.theme !== state.theme) {
+      state.theme = prefs.theme;
+      applyTheme();
+    }
+    renderMessages(true);
+  });
   el.composerHint.textContent = defaultHint();
   if (el.deliveryToggle) {
     el.deliveryToggle.querySelector("span").textContent = state.delivery === "queue" ? "Queue" : "Steer";

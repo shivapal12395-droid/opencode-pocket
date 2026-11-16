@@ -1,4 +1,4 @@
-const CACHE = "opencode-pocket-v8";
+const CACHE = "opencode-pocket-v9";
 const SHELL = [
   "./",
   "./index.html",
@@ -7,6 +7,8 @@ const SHELL = [
   "./assets/api.js",
   "./assets/markdown.js",
   "./assets/forms.js",
+  "./assets/prefs.js",
+  "./assets/artifacts.js",
   "./assets/mock.js",
   "./assets/icon.svg",
   "./assets/icon-192.png",

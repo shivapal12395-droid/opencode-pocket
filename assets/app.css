@@ -939,3 +939,206 @@ button.setting-row { width: 100%; text-align: left; background: none; border: 0;
   background: #fff;
 }
 .artifact-doc { font-size: 14.5px; line-height: 1.62; }
+
+
+/* ---- chat experience: activity, actions, artifacts, reading modes --------
+   The answer stays the spine. Tool work folds into one row, actions stay quiet
+   until wanted, and anything substantial gets a card that opens full screen. */
+
+:root { --font-scale: 1; --code-scale: 1; }
+
+.md { font-size: calc(14.6px * var(--font-scale)); line-height: 1.62; }
+.md .code-block code,
+.md pre code { font-size: calc(12.2px * var(--code-scale)); }
+.md p + p { margin-top: 0; }
+.md strong { font-weight: 650; }
+.md h1, .md h2, .md h3 { letter-spacing: -0.018em; }
+.md ul ul, .md ol ol, .md ul ol, .md ol ul { margin: 3px 0 3px; }
+.md li.has-sub { margin-bottom: 3px; }
+.md .task {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 15px; height: 15px; margin-right: 6px; border-radius: 4px;
+  border: 1px solid var(--line-strong); font-size: 10px; vertical-align: -2px;
+}
+.md .task.done { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.md .table-wrap { overflow-x: auto; margin: 0 0 11px; border-radius: 9px; border: 1px solid var(--line); }
+.md .table-wrap table { margin: 0; font-size: calc(13px * var(--font-scale)); }
+.md .md-img { display: block; margin: 4px 0 10px; }
+.md .image { max-width: 100%; border-radius: 9px; }
+.math-inline, .math-block {
+  font-family: var(--mono); font-size: 0.92em;
+  background: var(--soft); border-radius: 5px; padding: 1px 4px;
+}
+.math-block { display: block; padding: 9px 11px; margin: 0 0 10px; white-space: pre-wrap; overflow-x: auto; }
+
+/* code block controls */
+.md .code-tools { display: inline-flex; align-items: center; gap: 5px; }
+.code-btn {
+  font-family: var(--font); font-size: 10.5px; line-height: 1;
+  color: #b9c0ca; background: rgba(255, 255, 255, 0.08);
+  border: 0; border-radius: 5px; padding: 4px 7px; cursor: pointer;
+}
+.code-btn:active { background: rgba(255, 255, 255, 0.16); }
+.md .code-block.wrap pre { white-space: pre-wrap; word-break: break-word; }
+.md .code-block.wrap code { white-space: pre-wrap; }
+.md pre.numbered code,
+.artifact-body pre.numbered code { display: block; counter-reset: line; }
+.md pre.numbered .cl,
+.artifact-body pre.numbered .cl { display: block; counter-increment: line; padding-left: 2.9em; position: relative; }
+.md pre.numbered .cl::before,
+.artifact-body pre.numbered .cl::before {
+  content: counter(line);
+  position: absolute; left: 0; width: 2.2em; text-align: right;
+  color: #4b5563; font-size: 0.92em; user-select: none;
+}
+
+/* ---- activity rows */
+.activity { margin: 6px 0 10px; }
+.activity-head {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  background: transparent; border: 0; padding: 5px 2px; cursor: pointer;
+  color: var(--muted); font: inherit; font-size: 12.5px; text-align: left;
+}
+.act-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--muted-2); flex: 0 0 auto;
+}
+.act-dot.live { background: var(--accent); animation: pulse 1.4s infinite; }
+.act-title { font-weight: 600; color: var(--text); }
+.act-sub { color: var(--muted-2); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.activity-head .caret {
+  margin-left: auto; width: 13px; height: 13px; transform: rotate(90deg);
+  transition: transform 0.18s var(--ease); opacity: 0.6; flex: 0 0 auto;
+}
+.activity.open .activity-head .caret { transform: rotate(270deg); }
+.activity-body { display: none; padding-left: 2px; }
+.activity.open .activity-body { display: block; }
+.activity-body .tool-card { margin: 4px 0; }
+
+/* ---- message actions and timestamps */
+.msg-actions {
+  display: flex; gap: 2px; margin: 2px 0 0 -6px;
+  opacity: 0.5; transition: opacity 0.15s var(--ease);
+}
+.msg-actions:hover, .msg-actions:focus-within { opacity: 1; }
+.msg-actions button {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; border: 0; background: transparent;
+  border-radius: 8px; color: var(--muted); cursor: pointer;
+}
+.msg-actions button:active { background: var(--soft); color: var(--text); }
+.msg-actions svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.msg-user .msg-actions { justify-content: flex-end; margin: 2px -4px 0 0; }
+.msg-time { display: none; font-size: 10.5px; color: var(--muted-2); margin-top: 4px; }
+:root[data-timestamps="on"] .msg-time { display: block; }
+.msg-user .msg-time { text-align: right; }
+
+/* ---- follow-up chips */
+.follow-ups { display: flex; flex-wrap: wrap; gap: 6px; margin: 9px 0 2px; }
+.follow-chip {
+  border: 1px solid var(--line-strong); background: transparent; color: var(--muted);
+  font: inherit; font-size: 12px; padding: 6px 11px; border-radius: 99px; cursor: pointer;
+}
+.follow-chip:active { background: var(--soft); color: var(--text); }
+
+/* ---- artifact cards */
+.artifact-cards { display: flex; flex-direction: column; gap: 7px; margin: 4px 0 8px; }
+.artifact-card {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  border: 1px solid var(--line-strong); background: var(--elev);
+  border-radius: 13px; padding: 10px 12px; cursor: pointer; text-align: left;
+  font: inherit; color: var(--text);
+}
+.artifact-card:active { background: var(--elev-2); }
+.ac-icon {
+  width: 30px; height: 30px; flex: 0 0 auto; border-radius: 9px;
+  background: var(--accent-soft); color: var(--accent);
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.ac-icon svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.ac-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.ac-title { font-size: 13.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ac-sub { font-size: 11.5px; color: var(--muted-2); }
+.ac-open { font-size: 12px; color: var(--accent); font-weight: 600; }
+
+/* ---- artifact workspace body */
+.artifact-note {
+  font-size: 12.5px; color: var(--muted); background: var(--soft);
+  border: 1px solid var(--line); border-radius: 10px; padding: 9px 11px; margin-bottom: 10px;
+}
+.artifact-code { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--code-bg); }
+.artifact-code-head {
+  display: flex; justify-content: space-between; padding: 7px 11px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  font-family: var(--mono); font-size: 10.5px; color: #8b929c;
+  text-transform: uppercase; letter-spacing: 0.07em;
+}
+.artifact-code pre, .artifact-diff { margin: 0; padding: 11px; overflow: auto; }
+.artifact-code code, .artifact-diff code {
+  font-family: var(--mono); font-size: calc(12.2px * var(--code-scale));
+  line-height: 1.6; color: #d6dbe2; white-space: pre;
+}
+.artifact-code.wrap code { white-space: pre-wrap; word-break: break-word; }
+.artifact-diff .cl.add { color: #6ee7a8; background: rgba(52, 211, 153, 0.1); }
+.artifact-diff .cl.del { color: #fca5a5; background: rgba(248, 113, 113, 0.1); }
+.artifact-diff .cl.hunk { color: var(--accent); }
+.artifact-diff .cl { display: block; }
+.artifact-img { max-width: 100%; border-radius: 12px; display: block; margin: 0 auto; }
+.artifact-body .md { padding-bottom: 24px; }
+
+/* ---- reading modes */
+:root[data-density="compact"] .msg { margin-bottom: 8px; }
+:root[data-density="compact"] .md { line-height: 1.5; }
+:root[data-density="compact"] .md p { margin-bottom: 6px; }
+:root[data-density="compact"] .msg-user { margin: 6px 0 8px; }
+:root[data-density="compact"] .messages { padding-top: 6px; }
+:root[data-density="focus"] .activity,
+:root[data-density="focus"] .reasoning,
+:root[data-density="focus"] .msg-actions,
+:root[data-density="focus"] .follow-ups { display: none; }
+:root[data-density="focus"] .messages { padding-left: 18px; padding-right: 18px; }
+:root[data-density="focus"] .md { font-size: calc(15.4px * var(--font-scale)); line-height: 1.7; }
+
+/* reduced motion is a real switch, not a hint */
+:root[data-motion="off"] *,
+:root[data-motion="off"] *::before,
+:root[data-motion="off"] *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* ---- preferences studio --------------------------------------------------
+   Sections rather than one long list: appearance, chat, code, composer. */
+
+.prefs-section { margin: 0 0 6px; }
+.prefs-head {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.09em;
+  color: var(--muted-2); font-weight: 700;
+  padding: 14px 2px 6px;
+}
+.prefs-section:first-child .prefs-head { padding-top: 2px; }
+.accent-row { display: flex; gap: 9px; align-items: center; }
+.accent-dot {
+  width: 24px; height: 24px; border-radius: 50%; border: 2px solid transparent;
+  background: var(--dot); cursor: pointer; padding: 0;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.25);
+}
+.accent-dot.on { border-color: var(--text); box-shadow: inset 0 0 0 2px var(--bg); }
+.stepper { display: inline-flex; gap: 6px; }
+.stepper button {
+  height: 34px; min-width: 42px; border-radius: 9px; cursor: pointer;
+  border: 1px solid var(--line-strong); background: var(--soft); color: var(--text);
+  font: inherit; font-size: 13px; font-weight: 600;
+}
+.stepper button:active { background: var(--elev-2); }
+.prefs-foot { padding: 16px 0 8px; }
+.prefs-foot .btn { width: 100%; }
+.seg { flex: 0 0 auto; }

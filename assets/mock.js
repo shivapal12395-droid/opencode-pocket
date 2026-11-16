@@ -324,6 +324,208 @@ const DIFFS = [
 
 const clone = (v) => JSON.parse(JSON.stringify(v));
 
+/* ---- extra demo sessions: artifacts, long code, diagrams, documents ------
+   These exist so the public demo exercises the same surfaces a real session
+   does: a full HTML page, a real file, a diagram and a structured document. */
+
+const DEMO_PAGE = `<main class="settings">
+  <h1>Appearance</h1>
+  <label class="row">
+    <span>Theme</span>
+    <select id="theme">
+      <option value="amoled">Black</option>
+      <option value="dark">Dark</option>
+      <option value="light">Light</option>
+    </select>
+  </label>
+  <label class="row">
+    <span>Text size</span>
+    <input id="size" type="range" min="0.9" max="1.3" step="0.05" value="1" />
+  </label>
+  <button id="save">Save</button>
+  <output id="status"></output>
+</main>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #000; color: #ededf0; font: 15px/1.5 system-ui, sans-serif; }
+  .settings { padding: 24px 18px; display: grid; gap: 14px; }
+  h1 { font-size: 20px; margin: 0 0 6px; }
+  .row { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  select, input[type="range"] { accent-color: #4f8dfd; }
+  button { background: #4f8dfd; color: #fff; border: 0; border-radius: 10px; padding: 11px; font: inherit; }
+  output { color: #8d8d96; font-size: 13px; }
+</style>
+<script>
+  const status = document.getElementById("status");
+  document.getElementById("save").addEventListener("click", () => {
+    status.textContent = "Saved " + document.getElementById("theme").value;
+  });
+<\/script>`;
+
+const DEMO_MODULE = `import { createHash } from "node:crypto";
+
+export interface UploadResult {
+  key: string;
+  bytes: number;
+  checksum: string;
+}
+
+const MAX_BYTES = 20 * 1024 * 1024;
+
+/**
+ * Stores a file in the media bucket and returns a content-addressed key.
+ * Small enough to stay readable, strict enough to trust under load.
+ */
+export async function upload(
+  bucket: MediaBucket,
+  name: string,
+  body: Uint8Array,
+): Promise<UploadResult> {
+  if (body.byteLength === 0) throw new Error("empty upload: " + name);
+  if (body.byteLength > MAX_BYTES) throw new Error("upload too large: " + name);
+
+  const checksum = createHash("sha256").update(body).digest("hex");
+  const key = \`uploads/\${checksum.slice(0, 2)}/\${checksum}\`;
+
+  await bucket.put(key, body, {
+    contentType: guessType(name),
+    cacheControl: "public, max-age=31536000, immutable",
+  });
+
+  return { key, bytes: body.byteLength, checksum };
+}
+
+export function guessType(name: string): string {
+  if (name.endsWith(".png")) return "image/png";
+  if (name.endsWith(".webp")) return "image/webp";
+  if (name.endsWith(".pdf")) return "application/pdf";
+  return "application/octet-stream";
+}`;
+
+const DEMO_DIAGRAM = `flowchart TD
+  A[Prompt] --> B{Inbox}
+  B -- steer --> C[Running turn]
+  B -- queue --> D[Waiting]
+  D --> C
+  C --> E[Tool calls]
+  E --> F{Needs an answer?}
+  F -- yes --> G[Form]
+  G --> C
+  F -- no --> H[Answer]
+  H --> I[Idle]`;
+
+const DEMO_DOC = `# Release checklist
+
+Every release runs the same loop, in this order, so nothing ships half-checked.
+
+## Before tagging
+
+- Freeze the branch and announce it in the channel
+- Run the full test suite on the release commit, not on a merge commit
+- Re-read the diff of every dependency bump
+- Confirm the changelog names user-visible changes, not commits
+
+## Tagging
+
+- Create an annotated tag with the version and a one-line summary
+- Push the tag and wait for the build to publish all platform artifacts
+- Verify the install command on a clean machine before announcing
+
+## After release
+
+- Watch the error rate for an hour, with the alert threshold lowered
+- Reply in the issue tracker to everyone who reported a fixed bug
+- Write down what slowed this release down, while it is still fresh`;
+
+MESSAGES.ses_demo7 = [
+  {
+    id: "msg_d7u",
+    type: "user",
+    text: "Build me a tiny settings page I can drop into the app. Black background, one select, one slider, a save button.",
+    files: [],
+    time: { created: now() - 3 * hour },
+  },
+  {
+    id: "msg_d7a",
+    type: "assistant",
+    model: MODEL,
+    agent: "build",
+    time: { created: now() - 3 * hour, completed: now() - 3 * hour + 40_000 },
+    tokens: { input: 12400, output: 720, cache: { read: 9100, write: 0 } },
+    cost: 0.0021,
+    content: [
+      {
+        type: "text",
+        text: "Here's a self-contained page: no build step, no dependencies, and the theme select writes straight to `localStorage` so it survives a reload.",
+        ordinal: 0,
+      },
+      tool("call_d7", "write", { filePath: "public/settings.html" }, "wrote 28 lines"),
+      {
+        type: "text",
+        text: "```html\n" + DEMO_PAGE + "\n```\n\nOpen it directly — the preview tab in the artifact view runs it in a sandboxed frame.",
+        ordinal: 1,
+      },
+    ],
+  },
+  { id: "msg_d7i", type: "idle", outcome: "succeeded", time: { created: now() - 3 * hour + 41_000 } },
+];
+
+MESSAGES.ses_demo8 = [
+  {
+    id: "msg_d8u",
+    type: "user",
+    text: "Add a content-addressed upload helper, and sketch how a prompt moves through the inbox.",
+    files: [],
+    time: { created: now() - 4 * hour },
+  },
+  {
+    id: "msg_d8a",
+    type: "assistant",
+    model: MODEL,
+    agent: "build",
+    time: { created: now() - 4 * hour, completed: now() - 4 * hour + 55_000 },
+    tokens: { input: 18600, output: 1260, cache: { read: 14000, write: 0 } },
+    cost: 0.0034,
+    content: [
+      {
+        type: "text",
+        text: "Two parts: the upload helper keys objects by their SHA-256 so identical files dedupe for free, and the flow sketch shows where a prompt can wait.",
+        ordinal: 0,
+      },
+      tool("call_d8", "read", { filePath: "src/media/bucket.ts" }, "export interface MediaBucket {"),
+      {
+        type: "text",
+        text: "```ts\n" + DEMO_MODULE + "\n```\n\nAnd the path a prompt takes, including the form branch that waits for a human:",
+        ordinal: 1,
+      },
+      { type: "text", text: "```mermaid\n" + DEMO_DIAGRAM + "\n```", ordinal: 2 },
+      { type: "text", text: DEMO_DOC, ordinal: 3 },
+    ],
+  },
+  { id: "msg_d8i", type: "idle", outcome: "succeeded", time: { created: now() - 4 * hour + 56_000 } },
+];
+
+SESSIONS.push(
+  {
+    id: "ses_demo7",
+    projectID: "prj_web",
+    agent: "build",
+    model: MODEL,
+    title: "Build a settings page",
+    location: { directory: DIRS.web },
+    time: { created: now() - 3 * hour, updated: now() - 3 * hour, idle: now() - 3 * hour },
+  },
+  {
+    id: "ses_demo8",
+    projectID: "prj_api",
+    agent: "build",
+    model: MODEL,
+    title: "Upload helper and inbox flow",
+    location: { directory: DIRS.api },
+    time: { created: now() - 4 * hour, updated: now() - 4 * hour, idle: now() - 4 * hour },
+  }
+);
+
 export class MockApi {
   constructor() {
     this.sessionList = clone(SESSIONS);
@@ -375,7 +577,8 @@ export class MockApi {
   }
 
   async createSession({ directory, model }) {
-    const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
+    
+const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
     const s = {
       id,
       projectID: "prj_new",
