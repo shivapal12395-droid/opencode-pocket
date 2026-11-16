@@ -11,6 +11,8 @@ You already have a coding agent on your phone. The TUI is great with a keyboard,
 
 No build step. No backend of its own. One static app that talks straight to `opencode serve` on `127.0.0.1:4096`.
 
+<p align="center"><img src="docs/connect.png" width="280" alt="Connecting the phone to OpenCode over the loopback password or a pairing link" /></p>
+
 ## Screenshots
 
 | Sessions | Chat | Changes |
