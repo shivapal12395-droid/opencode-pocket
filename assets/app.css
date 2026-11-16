@@ -47,6 +47,32 @@
   --shadow-lg: 0 -12px 40px rgba(15, 23, 42, 0.14);
 }
 
+/* True black: OLED panels switch those pixels off, so the background is #000
+   and only raised surfaces carry a hint of grey. */
+:root[data-theme="amoled"] {
+  color-scheme: dark;
+  --bg: #000000;
+  --bg-deep: #000000;
+  --elev: #0a0a0b;
+  --elev-2: #111113;
+  --soft: #141416;
+  --soft-2: #1c1c1f;
+  --line: #1d1d20;
+  --line-strong: #2b2b30;
+  --text: #ededf0;
+  --muted: #8d8d96;
+  --muted-2: #62626b;
+  --code-bg: #000000;
+  --scrim: rgba(0, 0, 0, 0.72);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.9);
+  --shadow: 0 10px 30px rgba(0, 0, 0, 0.9);
+  --shadow-lg: 0 -14px 44px rgba(0, 0, 0, 0.95);
+  --accent: #4f8dfd;
+  --accent-soft: rgba(79, 141, 253, 0.14);
+  --accent-line: rgba(79, 141, 253, 0.34);
+  --danger-soft: rgba(220, 38, 38, 0.14);
+}
+
 :root[data-theme="dark"] {
   color-scheme: dark;
   --bg: #0b0f14;
@@ -88,6 +114,13 @@ button, input, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; background: none; border: 0; padding: 0; }
 a { color: inherit; }
 svg { display: block; }
+:root[data-theme="amoled"] .topbar,
+:root[data-theme="amoled"] .composer,
+:root[data-theme="amoled"] .sheet { background: var(--bg); }
+:root[data-theme="amoled"] .composer-box { background: var(--elev); }
+:root[data-theme="amoled"] .session-row:active,
+:root[data-theme="amoled"] .sheet-item:active { background: var(--elev-2); }
+
 .sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
 
 .icon-btn svg, .tool-btn svg, .chip svg, .fab svg, .send-btn svg,
@@ -328,7 +361,13 @@ svg { display: block; }
   overscroll-behavior-y: contain;
 }
 
-.msg { display: flex; flex-direction: column; animation: rise 0.24s var(--ease) both; }
+/* The transcript is re-rendered from scratch on every event, so the entry
+   animation lives on .enter and is only added to messages that are new to the
+   view. Animating every .msg meant the whole screen faded in several times per
+   turn, which read as a flash. */
+.msg { display: flex; flex-direction: column; }
+.msg.enter { animation: rise 0.24s var(--ease) both; }
+@media (prefers-reduced-motion: reduce) { .msg.enter { animation: none; } }
 @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 
 .msg-user { align-items: flex-end; margin: 10px 0 12px; }

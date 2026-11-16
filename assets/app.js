@@ -72,11 +72,14 @@ const state = {
   sheetOpen: false,
   chatOpen: false,
   lastAssistantId: null,
-  pinned: true,
   pendingRender: 0,
   diff: [],
   revert: null,
   sheetKind: null,
+  renderSignature: "",
+  renderedIds: new Set(),
+  skipEntrance: false,
+  visibilityHooked: false,
 };
 
 /* ---------------------------------------------------------------- dom */
@@ -126,6 +129,7 @@ function cacheDom() {
 /* ---------------------------------------------------------------- theme */
 
 function applyTheme() {
+  // auto resolves to plain dark/light; amoled is a deliberate choice, not a scheme
   const resolved =
     state.theme === "system"
       ? window.matchMedia("(prefers-color-scheme: dark)").matches
@@ -134,7 +138,8 @@ function applyTheme() {
       : state.theme;
   document.documentElement.dataset.theme = resolved;
   const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.content = resolved === "dark" ? "#0a0b0d" : "#f7f6f1";
+  const surface = { light: "#fafafa", dark: "#0b0f14", amoled: "#000000" }[resolved] ?? "#0b0f14";
+  if (meta) meta.content = surface;
 }
 
 /* ---------------------------------------------------------------- toast */
@@ -212,8 +217,11 @@ function startEvents() {
     if (status === "online") setConnection(state.busy ? "busy" : "online", "Connected");
     else if (status === "offline") setConnection("offline", "Reconnecting…");
   });
-  // Reconnect when returning to the app.
-  document.addEventListener("visibilitychange", onVisibility);
+  // Reconnect when returning to the app — once, however often events restart.
+  if (!state.visibilityHooked) {
+    state.visibilityHooked = true;
+    document.addEventListener("visibilitychange", onVisibility);
+  }
 }
 
 function stopEvents() {
@@ -381,6 +389,7 @@ async function openSession(sessionOrId) {
 
   state.revert = session.revert ?? null;
   state.diff = [];
+  resetMessageRender();
   updateRevertBanner();
   updateDiffChip();
 
@@ -403,19 +412,22 @@ function closeChat(fromPop = false) {
   }
   state.chatOpen = false;
   state.session = null;
+  resetMessageRender();
   showScreen("sessions");
   refreshSessions(true).catch(() => {});
 }
 
 async function loadMessages() {
   if (!state.api || !state.session) return;
+  // Only the first load of a session jumps to the newest message. A refresh that
+  // arrives mid-scroll must leave the reader where they are.
+  const firstLoad = state.messages.length === 0;
   state.messagesLoading = true;
   try {
     const res = await state.api.messages(state.session.id, { limit: 80, order: "desc" });
     state.messages = (res?.data ?? []).slice().reverse();
     state.messagesCursor = res?.cursor?.previous ?? null;
-    state.pinned = true;
-    renderMessages(true);
+    renderMessages(firstLoad);
   } finally {
     state.messagesLoading = false;
   }
@@ -670,9 +682,55 @@ function renderFailure(err) {
   </div>`;
 }
 
+// Cheap projection of everything the markup depends on. Rebuilding identical
+// markup costs a repaint and replays the entry animation, so it is skipped.
+function transcriptSignature() {
+  const bits = [state.busy ? "1" : "0", state.lastAssistantId ?? "-"];
+  for (const m of state.messages) {
+    bits.push(m.id, m.type);
+    if (m.type === "assistant") {
+      for (const p of m.content ?? []) {
+        bits.push(
+          p.type,
+          String(p.text?.length ?? 0),
+          p.state?.status ?? "",
+          String(p.state?.content?.length ?? 0),
+          p.time?.completed ? "c" : ""
+        );
+      }
+      if (m.error) bits.push("err");
+      if (m.retry) bits.push("retry" + (m.retry.attempt ?? ""));
+      bits.push(String(m.tokens?.input ?? ""), String(m.cost ?? ""));
+    } else if (m.type === "idle") {
+      bits.push(m.outcome ?? "");
+    } else {
+      bits.push(String(m.text?.length ?? 0), m.command ?? "", m.outcome ?? "", m.status ?? "");
+    }
+  }
+  return bits.join("|");
+}
+
+function resetMessageRender() {
+  state.renderSignature = "";
+  state.renderedIds = new Set();
+  state.skipEntrance = true;
+}
+
 function renderMessages(force = false) {
   if (state.screen !== "chat") return;
-  const pinned = isNearBottom() || force;
+
+  const signature = transcriptSignature();
+  const wasAtBottom = isNearBottom();
+  const pinned = force || wasAtBottom;
+
+  if (signature === state.renderSignature) {
+    // Nothing visible changed: leave the DOM (and the scroll position) alone.
+    if (pinned) scrollToBottom(false);
+    updateJumpLatest();
+    return;
+  }
+  state.renderSignature = signature;
+  const prevScroll = el.messages.scrollTop;
   const openTools = new Set($$(".tool-card.open", el.messages).map((n) => n.dataset.tool));
   const openReasoning = new Set($$(".reasoning.open", el.messages).map((n) => n.dataset.reasoning));
 
@@ -723,7 +781,21 @@ function renderMessages(force = false) {
   for (const n of $$(".tool-card", el.messages)) if (openTools.has(n.dataset.tool)) n.classList.add("open");
   for (const n of $$(".reasoning", el.messages)) if (openReasoning.has(n.dataset.reasoning)) n.classList.add("open");
 
+  // Only messages that arrive while the conversation is open play the entry
+  // animation. A freshly opened session renders at once, with no fade.
+  const animate = !state.skipEntrance;
+  state.skipEntrance = false;
+  const idsNow = new Set();
+  for (const n of $$("[data-msg]", el.messages)) {
+    const id = n.dataset.msg;
+    if (!id || idsNow.has(id)) continue;
+    idsNow.add(id);
+    if (animate && !state.renderedIds.has(id)) n.classList.add("enter");
+  }
+  state.renderedIds = idsNow;
+
   if (pinned) scrollToBottom(false);
+  else el.messages.scrollTop = prevScroll;
   updateJumpLatest();
 }
 
@@ -868,8 +940,13 @@ function handleEvent(event) {
     case "session.text.ended": {
       const m = ensureAssistant(data.assistantMessageID, data);
       const part = m.content.find((p) => p.type === "text" && p.ordinal === data.ordinal);
-      if (part) part.text = data.text ?? part.text;
-      else m.content.push({ type: "text", text: data.text ?? "", ordinal: data.ordinal });
+      if (part) {
+        part.text = data.text ?? part.text;
+        part.time = { completed: Date.now() };
+      } else {
+        m.content.push({ type: "text", text: data.text ?? "", ordinal: data.ordinal });
+      }
+      $(".stream-caret", el.messages)?.remove();
       renderMessages();
       break;
     }
@@ -2365,6 +2442,7 @@ function openSettings() {
               <button data-theme="system" class="${theme === "system" ? "on" : ""}">Auto</button>
               <button data-theme="dark" class="${theme === "dark" ? "on" : ""}">Dark</button>
               <button data-theme="light" class="${theme === "light" ? "on" : ""}">Light</button>
+              <button data-theme="amoled" class="${theme === "amoled" ? "on" : ""}">Black</button>
             </div>
           </div>
           <div class="setting-row">

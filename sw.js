@@ -1,4 +1,4 @@
-const CACHE = "opencode-pocket-v2";
+const CACHE = "opencode-pocket-v3";
 const SHELL = [
   "./",
   "./index.html",
