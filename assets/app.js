@@ -2564,7 +2564,8 @@ function handleError(err, fallback) {
 
 function bindEvents() {
   // connect
-  el.connectForm.addEventListener("submit", async (e) => {    e.preventDefault();
+  el.connectForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
     el.connectError.hidden = true;
     el.connectSubmit.disabled = true;
     el.connectSubmit.textContent = "Connecting…";
@@ -2770,6 +2771,31 @@ async function boot() {
     const tag = document.querySelector(".brand-tag");
     if (tag) tag.textContent = "DEMO";
     return;
+  }
+
+  // A launcher can open the app already connected: ?base=...&secret=...
+  // The query is stripped immediately so the password does not sit in the
+  // address bar or in history after the first paint.
+  const params = new URLSearchParams(location.search);
+  const qBase = params.get("base");
+  const qSecret = params.get("secret");
+  if (qBase && qSecret) {
+    history.replaceState(null, "", location.pathname);
+    el.connectScreen.hidden = false;
+    showScreen("sessions");
+    renderSessionSkeleton();
+    try {
+      await connect(qBase, qSecret);
+      return;
+    } catch (err) {
+      console.warn("link connect failed", err);
+      showScreen("connect");
+      el.connectError.hidden = false;
+      el.connectError.textContent = err?.message || "That link could not connect.";
+      el.connectUrl.value = qBase;
+      el.connectSecret.value = "";
+      return;
+    }
   }
 
   if (savedBase && savedSecret) {
