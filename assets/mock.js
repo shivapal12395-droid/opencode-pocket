@@ -100,7 +100,13 @@ const MESSAGES = {
       id: "msg_d1a1",
       type: "assistant",
       model: MODEL,
-      agent: "build",
+      agent: "build",      cost: 0.0184,
+      tokens: {
+        input: 128400,
+        output: 1842,
+        reasoning: 610,
+        cache: { read: 96200, write: 0 },
+      },
       time: { created: now() - 8 * min, completed: now() - 7 * min },
       content: [
         {
@@ -191,7 +197,13 @@ const MESSAGES = {
       id: "msg_d4a",
       type: "assistant",
       model: MODEL,
-      agent: "build",
+      agent: "build",      cost: 0.0061,
+      tokens: {
+        input: 42200,
+        output: 980,
+        reasoning: 204,
+        cache: { read: 31000, write: 0 },
+      },
       time: { created: now() - 29 * min, completed: now() - 28 * min },
       content: [
         {
@@ -282,6 +294,34 @@ const PROJECTS = [
   { id: "prj_notes", canonical: DIRS.notes, time: { active: now() - 4 * day } },
 ];
 
+const SKILLS = [
+  { id: "opencode", name: "OpenCode", description: "How OpenCode itself works", autoinvoke: true, path: "/home/you/.config/opencode/skills/opencode/SKILL.md", content: "# OpenCode\n" },
+  { id: "browser", name: "Browser", description: "Drive a real browser with CDP", autoinvoke: false, path: "/home/you/.config/opencode/skills/browser/SKILL.md", content: "# Browser\n" },
+  { id: "report", name: "Report", description: "File a bug report with diagnostics", autoinvoke: false, path: "/home/you/.config/opencode/skills/report/SKILL.md", content: "# Report\n" },
+];
+
+const SAVED_RULES = [
+  { id: "psv_demo1", projectID: "prj_web", action: "read", resource: "*", time: { created: now() - 12 * day, updated: now() - 12 * day } },
+  { id: "psv_demo2", projectID: "prj_web", action: "bash", resource: "git *", time: { created: now() - 3 * day, updated: now() - 3 * day } },
+];
+
+const DIFFS = [
+  {
+    file: "src/auth/session.ts",
+    status: "modified",
+    additions: 6,
+    deletions: 4,
+    patch: "--- a/src/auth/session.ts\n+++ b/src/auth/session.ts\n@@ -1,9 +1,11 @@\n export async function setSession(token, rememberMe) {\n-  await cookies.set(\"access\", token.access, { maxAge: 60 * 15 })\n+  await cookies.set(\"access\", token.access, { maxAge: 60 * 15 })\n+  await cookies.set(\"refresh\", token.refresh, { maxAge: 60 * 60 * 24 })\n   if (rememberMe) {\n-    await cookies.set(\"refresh\", token.refresh)\n+    await cookies.set(\"refresh\", token.refresh, { maxAge: 60 * 60 * 24 * 30 })\n   }\n }",
+  },
+  {
+    file: "src/http/rate-limit.ts",
+    status: "added",
+    additions: 96,
+    deletions: 0,
+    patch: "--- /dev/null\n+++ b/src/http/rate-limit.ts\n@@ -0,0 +1,6 @@\n+const WINDOW = 60_000\n+const LIMIT = 60\n+\n+export function allow(key, now) {\n+  return hits(key, now) <= LIMIT\n+}",
+  },
+];
+
 const clone = (v) => JSON.parse(JSON.stringify(v));
 
 export class MockApi {
@@ -294,6 +334,8 @@ export class MockApi {
     this.agentList = clone(AGENTS);
     this.projectList = clone(PROJECTS);
     this.seq = 100;
+    this.diffs = clone(DIFFS);
+    this.revert = null;
   }
 
   later(fn, ms) {
@@ -384,6 +426,129 @@ export class MockApi {
     return clone(this.projectList);
   }
 
+  /* the same feature surface as the real client, answered from memory */
+  async findFiles(query, { limit = 40 } = {}) {
+    const names = [
+      "src/auth/session.ts",
+      "src/auth/middleware.ts",
+      "src/ui/permission-sheet.tsx",
+      "src/http/rate-limit.ts",
+      "src/http/webhooks.ts",
+      "db/migrations/0007_usage_logs.sql",
+      "package.json",
+      "README.md",
+      "docs/launch-notes.md",
+    ];
+    const q = String(query || "").toLowerCase();
+    return names
+      .filter((n) => !q || n.toLowerCase().includes(q))
+      .slice(0, limit)
+      .map((p) => ({ path: p, type: "file" }));
+  }
+
+  async listDir() {
+    return [{ path: "src", type: "directory" }, { path: "docs", type: "directory" }, { path: "package.json", type: "file" }];
+  }
+
+  async readFile(path) {
+    return "// " + path + "\n// demo mode: file contents are not fetched\n";
+  }
+
+  async sessionDiff() {
+    return clone(this.diffs);
+  }
+
+  async sessionContext() {
+    return [];
+  }
+
+  async forkSession(id) {
+    const s = this.sessionList.find((x) => x.id === id);
+    const forked = { ...clone(s ?? {}), id: "ses_demo_fork", title: (s?.title ?? "Session") + " (fork)" };
+    this.sessionList.unshift(forked);
+    this.messageMap[forked.id] = clone(this.messageMap[id] ?? []);
+    return { data: forked };
+  }
+
+  async compactSession(id) {
+    this.later(() => this.emit("session.compaction.ended", { sessionID: id, reason: "manual", text: "summary" }), 400);
+    return { data: { id: "msg_compact", sessionID: id, type: "compaction", payload: {}, delivery: "steer" } };
+  }
+
+  async stageRevert(id, messageID) {
+    const revert = { messageID, files: clone(this.diffs) };
+    this.revert = revert;
+    this.later(() => this.emit("session.revert.staged", { sessionID: id, revert }), 120);
+    return { data: revert };
+  }
+
+  async commitRevert(id) {
+    this.revert = null;
+    this.emit("session.revert.committed", { sessionID: id });
+    return {};
+  }
+
+  async clearRevert(id) {
+    this.revert = null;
+    this.emit("session.revert.cleared", { sessionID: id });
+    return {};
+  }
+
+  async viewSession() {
+    return {};
+  }
+
+  async runShell(id, command) {
+    this.messageMap[id] = [...(this.messageMap[id] ?? []), { id: "msg_sh_" + this.seq++, type: "shell", shellID: "shl_demo", command, status: "completed", exit: 0, output: { text: "" }, time: { created: now(), completed: now() } }];
+    this.later(() => this.emit("session.shell.ended", { sessionID: id }), 300);
+    return {};
+  }
+
+  async skills() {
+    return clone(SKILLS);
+  }
+
+  async activateSkill(id, skillID) {
+    const skill = SKILLS.find((s) => s.id === skillID) ?? SKILLS[0];
+    this.messageMap[id] = [...(this.messageMap[id] ?? []), { id: "msg_sk_" + this.seq++, type: "skill", skill: skill.id, name: skill.name, text: skill.content, time: { created: now() } }];
+    this.later(() => this.emit("session.skill.activated", { sessionID: id, skill: skill.id }), 200);
+    return {};
+  }
+
+  async references() {
+    return [];
+  }
+
+  async mcpServers() {
+    return [{ name: "blender-mcp", title: "Blender", status: { status: "connected" } }, { name: "playwright", title: "Playwright", status: { status: "connected" } }, { name: "tinyfish", title: "TinyFish", status: { status: "connected" } }, { name: "audio", title: "Audio", status: { status: "failed", error: "MCP server process exited with code 2" } }, { name: "godot", title: "Godot", status: { status: "disabled" } }];
+  }
+
+  async providers() {
+    return [{ id: "opencode", name: "OpenCode", activation: "enabled" }, { id: "anthropic", name: "Anthropic", activation: "auto" }, { id: "openai", name: "OpenAI", activation: "auto" }, { id: "google", name: "Google", activation: "auto" }, { id: "ollama", name: "Ollama", activation: "disabled" }];
+  }
+
+  async savedPermissions() {
+    return clone(SAVED_RULES);
+  }
+
+  async removeSavedPermission(id) {
+    const i = SAVED_RULES.findIndex((r) => r.id === id);
+    if (i >= 0) SAVED_RULES.splice(i, 1);
+    return {};
+  }
+
+  async worktrees() {
+    return [];
+  }
+
+  async defaultModel() {
+    return clone(MODEL);
+  }
+
+  async stats() {
+    return { range: { from: now() - 30 * day, to: now() }, sessions: 284, subagents: 12, prompts: 3868, steps: 9241, tokens: { input: 185_662_416, output: 4_120_988, reasoning: 902_140, cache: { read: 61_204_331, write: 3_119_204 } }, cost: 0.96, tools: { total: 5120 }, activeDays: 41, streak: 6, activity: [], models: [] };
+  }
+
   async commands() {
     return { data: [{ name: "init", description: "Create an AGENTS.md for this project" }, { name: "review", description: "Review the current changes" }] };
   }
@@ -424,6 +589,7 @@ export class MockApi {
 
   prompt(id, { text, files }) {
     const sid = id;
+    if (/\b(fail|error|rate.?limit|429)\b/i.test(text)) return this.failTurn(sid, text);
     const userMsg = {
       id: "msg_u_" + this.seq++,
       type: "user",
@@ -438,6 +604,8 @@ export class MockApi {
         : "Here's how I'd approach it:\n\n1. Reproduce the issue locally with `bun run dev`\n2. Add the missing cookie write in `src/auth/session.ts`\n3. Leave the app idle for 20 minutes and confirm the session survives\n\n```ts\nawait cookies.set(\"refresh\", token.refresh, {\n  httpOnly: true,\n  sameSite: \"lax\",\n})\n```\n\nWant me to apply the patch?";
 
     const assistant = { id: assistantId, type: "assistant", model: MODEL, agent: "build", content: [{ type: "text", text: "", ordinal: 0 }], time: { created: now() } };
+    assistant.cost = 0.0037;
+    assistant.tokens = { input: 18400, output: 412, reasoning: 96, cache: { read: 12200, write: 0 } };
     this.messageMap[sid] = [...(this.messageMap[sid] ?? []), userMsg, assistant];
     this.emit("session.inbox.enqueued", { sessionID: sid, inboxID: userMsg.id, item: { type: "user", payload: { text }, delivery: "steer" } });
 
@@ -473,6 +641,55 @@ export class MockApi {
       }
     }, at + 120);
 
+    return { data: { id: userMsg.id, sessionID: sid, type: "user", payload: { text }, delivery: "steer", time: { created: now() } } };
+  }
+
+/** Walks the same path a rejected provider call takes on a real server. */
+  failTurn(sid, text) {
+    const error = {
+      type: "provider.rate-limit",
+      message: "Rate limit reached for demo-provider/fast-1. The plan allows 60 requests per minute.",
+      status: 429,
+      retryAfterMs: 90_000,
+    };
+    const userMsg = {
+      id: "msg_u_" + this.seq++,
+      type: "user",
+      text,
+      files: [],
+      time: { created: now() },
+    };
+    const assistantId = "msg_a_" + this.seq++;
+    const assistant = {
+      id: assistantId,
+      type: "assistant",
+      model: MODEL,
+      agent: "build",
+      content: [],
+      retry: { attempt: 1, at: now(), error },
+      time: { created: now() },
+    };
+    this.messageMap[sid] = [...(this.messageMap[sid] ?? []), userMsg, assistant];
+    this.emit("session.inbox.enqueued", { sessionID: sid, inboxID: userMsg.id, item: { type: "user", payload: { text }, delivery: "steer" } });
+    this.later(() => this.emit("session.execution.started", { sessionID: sid }), 200);
+    this.later(() => {
+      this.emit("session.retry.scheduled", { sessionID: sid, assistantMessageID: assistantId, attempt: 1, error });
+    }, 500);
+    this.later(() => {
+      this.emit("session.step.failed", { sessionID: sid, assistantMessageID: assistantId, error });
+      assistant.retry = undefined;
+      assistant.error = error;
+      assistant.finish = "error";
+      assistant.time.completed = now();
+      this.emit("session.execution.failed", { sessionID: sid, error });
+      this.messageMap[sid].push({ id: "msg_i_" + this.seq++, type: "idle", outcome: "failed", error, time: { created: now() } });
+      this.emit("session.idle", { sessionID: sid });
+      const s = this.sessionList.find((x) => x.id === sid);
+      if (s) {
+        s.title = s.title === "New session" ? text.slice(0, 60) : s.title;
+        s.time.updated = now();
+      }
+    }, 1900);
     return { data: { id: userMsg.id, sessionID: sid, type: "user", payload: { text }, delivery: "steer", time: { created: now() } } };
   }
 

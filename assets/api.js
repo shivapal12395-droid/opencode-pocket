@@ -118,6 +118,37 @@ export class Api {
     }
   }
 
+  /** Same as request(), but hands back the raw body — file contents are not JSON. */
+  async requestText(path, { timeout = 20000, signal } = {}) {
+    const controller = new AbortController();
+    const timer = timeout ? setTimeout(() => controller.abort(), timeout) : null;
+    const onAbort = () => controller.abort();
+    if (signal) signal.addEventListener("abort", onAbort, { once: true });
+    try {
+      const res = await this.fetch(this.base + path, {
+        credentials: "omit",
+        signal: controller.signal,
+        headers: { authorization: this.authHeader, accept: "text/plain, */*" },
+      });
+      const text = await res.text();
+      if (!res.ok) {
+        let message = `Request failed (${res.status})`;
+        try {
+          const json = JSON.parse(text);
+          message = json?.message || json?.error || message;
+        } catch {}
+        throw new ApiError(message, res.status, text);
+      }
+      return text;
+    } catch (err) {
+      if (err?.name === "AbortError") throw new ApiError("Request timed out", 0);
+      throw err;
+    } finally {
+      if (timer) clearTimeout(timer);
+      if (signal) signal.removeEventListener("abort", onAbort);
+    }
+  }
+
   info() {
     return this.request("GET", "/api/info", undefined, { timeout: 8000 });
   }
@@ -177,6 +208,156 @@ export class Api {
 
   switchAgent(id, agent) {
     return this.request("POST", `/api/session/${id}/agent`, { agent });
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Everything below mirrors routes in the server's OpenAPI document.
+   * Sub-resources are location-scoped with `location[directory]=<path>`;
+   * a JSON-encoded `location` is rejected by the query codec.
+   * ------------------------------------------------------------------ */
+
+  static located(directory) {
+    return directory ? `location[directory]=${encodeURIComponent(directory)}` : "";
+  }
+
+  /** Files in the workspace, for @-mentions. Returns FileSystem.Entry[]. */
+  async findFiles(query, { directory, type, limit = 40, signal } = {}) {
+    const q = new URLSearchParams({ query, limit: String(limit) });
+    if (type) q.set("type", type);
+    const loc = Api.located(directory);
+    const path = `/api/fs/find?${q}${loc ? "&" + loc : ""}`;
+    const res = await this.request("GET", path, undefined, { signal, timeout: 20000 });
+    return res?.data ?? [];
+  }
+
+  /** One directory level: [{ path, type: "file" | "directory" }]. */
+  async listDir(path = ".", { directory } = {}) {
+    const q = new URLSearchParams({ path });
+    const loc = Api.located(directory);
+    const res = await this.request("GET", `/api/fs/list?${q}${loc ? "&" + loc : ""}`, undefined, {
+      timeout: 20000,
+    });
+    return res?.data ?? [];
+  }
+
+  /** Raw text of one file (used to preview a mention). */
+  async readFile(relativePath, { directory } = {}) {
+    const loc = Api.located(directory);
+    const clean = String(relativePath).split("/").map(encodeURIComponent).join("/");
+    return this.requestText(`/api/fs/read/${clean}${loc ? "?" + loc : ""}`);
+  }
+
+  /** Files this session changed: FileDiff.Info[] with a unified patch each. */
+  async sessionDiff(id) {
+    const res = await this.request("GET", `/api/session/${id}/diff`, undefined, { timeout: 20000 });
+    return res?.data ?? [];
+  }
+
+  /** The message window currently sent to the model. */
+  async sessionContext(id) {
+    const res = await this.request("GET", `/api/session/${id}/context`, undefined, { timeout: 20000 });
+    return res?.data ?? [];
+  }
+
+  /** Branch a session; `before` forks up to (not including) that message. */
+  async forkSession(id, before) {
+    return this.request("POST", `/api/session/${id}/fork`, before ? { before } : {});
+  }
+
+  /** Summarise the conversation so far into fresh context. */
+  async compactSession(id, { delivery } = {}) {
+    return this.request("POST", `/api/session/${id}/compact`, delivery ? { delivery } : {}, { timeout: 120000 });
+  }
+
+  /**
+   * OpenCode's undo. Staging a message rewinds the transcript and restores the
+   * files touched since it; committing keeps the rewind, clearing drops it.
+   */
+  async stageRevert(id, messageID, files = false) {
+    const res = await this.request("POST", `/api/session/${id}/revert/stage`, { messageID, files });
+    return res?.data ?? null;
+  }
+
+  commitRevert(id) {
+    return this.request("POST", `/api/session/${id}/revert/commit`);
+  }
+
+  clearRevert(id) {
+    return this.request("DELETE", `/api/session/${id}/revert`);
+  }
+
+  /** Mark the session read up to an idle watermark (Session.Info.time.idle). */
+  viewSession(id, idle) {
+    return this.request("POST", `/api/session/${id}/view`, { idle });
+  }
+
+  /** Run a shell command through the session, like a `!cmd` prompt. */
+  runShell(id, command) {
+    return this.request("POST", `/api/session/${id}/shell`, { command }, { timeout: 120000 });
+  }
+
+  async skills({ directory } = {}) {
+    const loc = Api.located(directory);
+    const res = await this.request("GET", `/api/skill${loc ? "?" + loc : ""}`, undefined, { timeout: 20000 });
+    return res?.data ?? [];
+  }
+
+  /** Load a skill into the running session. */
+  activateSkill(id, skillID) {
+    return this.request("POST", `/api/experimental/session/${id}/skill`, { id: skillID });
+  }
+
+  async references({ directory } = {}) {
+    const loc = Api.located(directory);
+    const res = await this.request("GET", `/api/reference${loc ? "?" + loc : ""}`, undefined, { timeout: 20000 });
+    return res?.data ?? [];
+  }
+
+  async mcpServers({ directory } = {}) {
+    const loc = Api.located(directory);
+    const res = await this.request("GET", `/api/mcp${loc ? "?" + loc : ""}`, undefined, { timeout: 20000 });
+    return res?.data ?? [];
+  }
+
+  async providers({ directory } = {}) {
+    const loc = Api.located(directory);
+    const res = await this.request("GET", `/api/provider${loc ? "?" + loc : ""}`, undefined, { timeout: 20000 });
+    return res?.data ?? [];
+  }
+
+  /** "Always allow" rules the user has saved, newest first. */
+  async savedPermissions(projectID) {
+    const q = projectID ? `?projectID=${encodeURIComponent(projectID)}` : "";
+    const res = await this.request("GET", `/api/permission/saved${q}`, undefined, { timeout: 20000 });
+    return res?.data ?? [];
+  }
+
+  removeSavedPermission(id) {
+    return this.request("DELETE", `/api/permission/saved/${id}`);
+  }
+
+  /** Checked-out worktrees for a project. */
+  async worktrees(projectID) {
+    const res = await this.request("GET", `/api/worktree?projectID=${encodeURIComponent(projectID)}`, undefined, {
+      timeout: 20000,
+    });
+    return res?.data ?? res ?? [];
+  }
+
+  async defaultModel({ directory } = {}) {
+    const loc = Api.located(directory);
+    const res = await this.request("GET", `/api/model/default${loc ? "?" + loc : ""}`, undefined, { timeout: 20000 });
+    return res?.data ?? null;
+  }
+
+  /** Usage rollup across sessions (experimental). */
+  async stats({ from, to, timezone } = {}) {
+    const q = new URLSearchParams();
+    if (from) q.set("from", String(from));
+    if (to) q.set("to", String(to));
+    if (timezone) q.set("timezone", timezone);
+    const res = await this.request("GET", `/api/experimental/session/stats?${q}`, undefined, { timeout: 20000 });
+    return res?.data ?? null;
   }
 
   permissions(id) {

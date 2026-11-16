@@ -74,6 +74,9 @@ const state = {
   lastAssistantId: null,
   pinned: true,
   pendingRender: 0,
+  diff: [],
+  revert: null,
+  sheetKind: null,
 };
 
 /* ---------------------------------------------------------------- dom */
@@ -101,6 +104,10 @@ function cacheDom() {
   el.chipModel = $("#chip-model");
   el.chipAgent = $("#chip-agent");
   el.chatStatus = $("#chat-status");
+  el.chatDiff = $("#chat-diff");
+  el.chatDiffCount = $("#chat-diff-count");
+  el.revertBanner = $("#revert-banner");
+  el.btnMention = $("#btn-mention");
   el.permBanner = $("#perm-banner");
   el.input = $("#input");
   el.send = $("#btn-send");
@@ -372,12 +379,20 @@ async function openSession(sessionOrId) {
   autoGrow();
   updateSendButton();
 
+  state.revert = session.revert ?? null;
+  state.diff = [];
+  updateRevertBanner();
+  updateDiffChip();
+
   try {
     await loadMessages();
     await loadPermissions();
   } catch (err) {
     handleError(err, "Could not load messages");
   }
+  // Fire and forget: the watermark and the change list are decorations.
+  if (session.time?.idle) state.api.viewSession(session.id, session.time.idle).catch(() => {});
+  refreshDiff();
 }
 
 function closeChat(fromPop = false) {
@@ -438,13 +453,38 @@ function ensureAssistant(msgID, data = {}) {
   return m;
 }
 
-function partKey(msgID, part) {
-  return `${msgID}:${part.type}:${part.ordinal ?? part.id ?? 0}`;
+
+// Tool state is a tagged union on `status`: streaming | running | completed | error
+// (SessionMessage.ToolState). Streaming carries the raw, partial input as a string.
+function toolStatus(part) {
+  const status = part.state?.status;
+  if (status === "streaming") return "running";
+  return status ?? "running";
+}
+
+function toolInput(part) {
+  const input = part.state?.input;
+  if (input == null) return null;
+  if (typeof input === "string") return input; // streaming: raw partial JSON
+  return JSON.stringify(input, null, 2);
+}
+
+function contentToText(content) {
+  return (content ?? [])
+    .map((c) => {
+      if (c.type === "text") return c.text;
+      if (c.type === "file") return `[file] ${c.name || c.uri}${c.mime ? ` · ${c.mime}` : ""}`;
+      return "";
+    })
+    .join("\n")
+    .trim();
 }
 
 function toolSummary(part) {
-  const input = part.state?.input || {};
-  const raw =
+  const raw = part.state?.input;
+  if (typeof raw === "string") return raw.replace(/\s+/g, " ").trim().slice(0, 90);
+  const input = raw || {};
+  const rawValue =
     input.command ??
     input.filePath ??
     input.path ??
@@ -455,24 +495,20 @@ function toolSummary(part) {
     input.task ??
     input.prompt ??
     "";
-  const oneLine = String(raw).replace(/\s+/g, " ").trim();
+  const oneLine = String(rawValue).replace(/\s+/g, " ").trim();
   return oneLine.length > 90 ? oneLine.slice(0, 89) + "…" : oneLine;
-}
-
-function toolStatus(part) {
-  return part.state?.status ?? (part.state?.metadata?.status === "completed" ? "completed" : "running");
 }
 
 function renderTool(part) {
   const status = toolStatus(part);
+  const failed = part.state?.status === "error";
   const key = escapeHtml(part.id ?? Math.random().toString(36));
   const summary = toolSummary(part);
-  const content = (part.state?.content ?? [])
-    .map((c) => (c.type === "text" ? c.text : c.type === "file" ? `[file] ${c.path ?? ""}` : ""))
-    .join("\n")
-    .trim();
-  const input = part.state?.input;
-  const inputText = input ? JSON.stringify(input, null, 2) : "";
+  // An errored tool keeps its partial output in `content` and its reason in `error`.
+  const content = [contentToText(part.state?.content), failed ? part.state?.error?.message : ""]
+    .filter(Boolean)
+    .join("\n\n");
+  const inputText = toolInput(part);
   const exit = part.state?.metadata?.exit;
   const iconName = /shell|bash|command/i.test(part.name || "")
     ? "terminal"
@@ -481,7 +517,7 @@ function renderTool(part) {
       : /read|write|edit|file/i.test(part.name || "")
         ? "file"
         : "wrench";
-  const verb = status === "running" ? "Running" : status === "error" ? "Failed" : "Ran";
+  const verb = status === "running" ? "Running" : failed ? "Failed" : "Ran";
 
   return `
     <div class="tool-card" data-tool="${key}">
@@ -489,15 +525,15 @@ function renderTool(part) {
         <span class="tool-icon">${icon(iconName)}</span>
         <span class="tool-name">${verb} ${escapeHtml(part.name || "tool")}</span>
         <span class="tool-summary">${escapeHtml(summary)}</span>
-        <span class="tool-state" data-status="${status === "error" ? "error" : status === "completed" ? "completed" : "running"}">
-          ${status === "completed" ? icon("check") : status === "error" ? icon("x") : `<span class="spinner"></span>`}
+        <span class="tool-state" data-status="${failed ? "error" : status === "completed" ? "completed" : "running"}">
+          ${status === "completed" ? icon("check") : failed ? icon("x") : `<span class="spinner"></span>`}
         </span>
       </button>
       <div class="tool-body">
         ${inputText ? `<div class="tool-label">Input</div><pre class="tool-pre">${escapeHtml(inputText)}</pre>` : ""}
         ${
           content
-            ? `<div class="tool-label">Output${exit != null ? ` · exit ${escapeHtml(String(exit))}` : ""}</div><pre class="tool-pre${status === "error" ? " err" : ""}">${escapeHtml(content)}</pre>`
+            ? `<div class="tool-label">Output${exit != null ? ` · exit ${escapeHtml(String(exit))}` : ""}</div><pre class="tool-pre${failed ? " err" : ""}">${escapeHtml(content)}</pre>`
             : status === "running"
               ? `<div class="tool-label">Waiting for output…</div>`
               : ""
@@ -531,27 +567,48 @@ function renderAssistant(m) {
         return `<div class="md" data-part="${escapeHtml(key)}">${renderMarkdown(part.text)}${caret}</div>`;
       }
       if (part.type === "tool") return renderTool(part);
-      if (part.type === "retry") {
-        return `<div class="msg-system"><span class="sys">${icon("refresh")}Retrying…</span></div>`;
-      }
       return "";
     })
     .join("");
 
+  // A failed step keeps its reason on the message (`Assistant.error`), and a provider
+  // hiccup shows up as `Assistant.retry` before any content has been written.
+  const retry = m.retry
+    ? `<div class="assistant-note">${icon("refresh")}Retrying, attempt ${escapeHtml(String(m.retry.attempt))}${
+        m.retry.error?.message ? ` · ${escapeHtml(m.retry.error.message)}` : ""
+      }</div>`
+    : "";
+  const failure = m.error ? renderFailure(m.error) : "";
+  const empty =
+    !html && !failure && streaming ? `<div class="typing-row"><span class="typing"><i></i><i></i><i></i></span></div>` : "";
+
   return `
     <div class="msg msg-assistant" data-msg="${escapeHtml(m.id)}">
-      <div class="assistant-body">${html || (streaming ? `<div class="typing-row"><span class="typing"><i></i><i></i><i></i></span></div>` : "")}</div>
+      <div class="assistant-body">${html}${retry}${failure}${empty}</div>
+      ${streaming ? "" : usageLine(m)}
     </div>`;
 }
 
+// Attachments come back from the API as raw base64 (`data` + `mime`), and go out
+// from the composer as a data URI (`uri`). Accept both, and build the data URI once.
+function fileSrc(f) {
+  if (f.uri) return f.uri;
+  if (!f.data) return "";
+  if (!f._src) f._src = `data:${f.mime || "image/jpeg"};base64,${f.data}`;
+  return f._src;
+}
+
 function renderUser(m) {
-  const files = (m.files ?? []).filter((f) => (f.mime ?? "").startsWith("image/") && f.uri);
+  const files = (m.files ?? [])
+    .filter((f) => (f.mime ?? "image/jpeg").startsWith("image/"))
+    .map((f) => ({ ...f, src: fileSrc(f) }))
+    .filter((f) => f.src);
   return `
     <div class="msg msg-user" data-msg="${escapeHtml(m.id)}">
       <div class="bubble">${escapeHtml(m.text ?? "")}
         ${
           files.length
-            ? `<div class="files">${files.map((f) => `<img src="${escapeHtml(f.uri)}" alt="">`).join("")}</div>`
+            ? `<div class="files">${files.map((f) => `<img src="${escapeHtml(f.src)}" alt="${escapeHtml(f.name ?? "attachment")}">`).join("")}</div>`
             : ""
         }
       </div>
@@ -562,6 +619,57 @@ function renderSystem(text, iconName = "check") {
   return `<div class="msg msg-system"><span class="sys">${icon(iconName)}${escapeHtml(text)}</span></div>`;
 }
 
+const fmtWait = (ms) => {
+  const mins = Math.round(ms / 60_000);
+  if (mins < 60) return `~${Math.max(mins, 1)} min`;
+  const hours = Math.round(mins / 60);
+  if (hours < 48) return `~${hours} h`;
+  return `~${Math.round(hours / 24)} days`;
+};
+
+// `Shell` messages carry the command, its status, exit code and combined output.
+function renderShell(m) {
+  const cmd = (m.command ?? "").replace(/\s+/g, " ").trim();
+  const head = cmd.length > 80 ? cmd.slice(0, 79) + "..." : cmd;
+  const exit = m.exit ?? m.output?.exit;
+  const tail = exit != null ? ` · exit ${exit}` : m.status ? ` · ${m.status}` : "";
+  return renderSystem(`$ ${head}${tail}`, "terminal");
+}
+
+// `Compaction` is a tagged union on `status`: running | completed | failed.
+function renderCompaction(m) {
+  if (m.status === "failed") return renderFailure(m.error);
+  const label = m.status === "running" ? "Compacting context..." : "Context compacted";
+  return renderSystem(m.reason ? `${label} · ${m.reason}` : label, "refresh");
+}
+
+function failureHint(err) {
+  const status = err?.status;
+  const type = err?.type ?? "";
+  if (type.includes("free-limit") || status === 429) {
+    const wait = err?.retryAfterMs ? ` Try again in ${fmtWait(err.retryAfterMs)}.` : "";
+    return type.includes("free-limit")
+      ? `Tip: switch to another model from the chip above the composer.${wait}`
+      : `Tip: wait a moment, or switch models from the chip above the composer.${wait}`;
+  }
+  if (status === 401 || status === 403) return "Your password may have changed. Reconnect from Settings.";
+  if (status === 404) return "The model or provider is no longer available. Pick another one.";
+  if (!status) return "The server didn't respond. Check that Termux is still running, then send again.";
+  return "";
+}
+
+function renderFailure(err) {
+  const msg = err?.message || "The request failed before the model replied.";
+  const hint = failureHint(err);
+  return `<div class="msg msg-system">
+    <div class="failure">
+      <div class="failure-head">${icon("x")}Failed</div>
+      <div class="failure-text">${escapeHtml(msg)}</div>
+      ${hint ? `<div class="failure-hint">${escapeHtml(hint)}</div>` : ""}
+    </div>
+  </div>`;
+}
+
 function renderMessages(force = false) {
   if (state.screen !== "chat") return;
   const pinned = isNearBottom() || force;
@@ -570,17 +678,34 @@ function renderMessages(force = false) {
 
   const chunks = [];
 
+  // Mirrors the SessionMessage.Info union: every variant gets a row, and anything
+  // unknown still renders (nothing in a transcript should silently disappear).
+  // A failed turn records the same error twice — on the assistant step and on the
+  // closing idle marker — so remember what has already been shown and skip the repeat.
+  let shownFailure = null;
   for (const m of state.messages) {
-    if (m.type === "user") chunks.push(renderUser(m));
-    else if (m.type === "assistant") chunks.push(renderAssistant(m));
-    else if (m.type === "idle" && m.outcome && m.outcome !== "succeeded")
-      chunks.push(renderSystem(m.outcome === "interrupted" ? "Interrupted" : "Failed", m.outcome === "failed" ? "x" : "stop"));
-    else if (m.type === "shell")
-      chunks.push(renderSystem(`$ ${(m.command ?? "").slice(0, 80)}`, "terminal"));
-    else if (m.type === "compaction") chunks.push(renderSystem("Context compacted", "refresh"));
-    else if (m.type === "system" && m.text) chunks.push(renderSystem(m.text, "spark"));
+    if (m.type === "user") {
+      shownFailure = null;
+      chunks.push(renderUser(m));
+    } else if (m.type === "assistant") {
+      if (m.error) shownFailure = m.error.message ?? "";
+      chunks.push(renderAssistant(m));
+    } else if (m.type === "idle" && m.outcome && m.outcome !== "succeeded") {
+      if (m.outcome === "failed") {
+        const msg = m.error?.message ?? "";
+        if (!msg || msg !== shownFailure) chunks.push(renderFailure(m.error));
+      } else {
+        chunks.push(renderSystem(m.outcome === "interrupted" ? "Interrupted" : "Stopped", "stop"));
+      }
+    } else if (m.type === "shell") chunks.push(renderShell(m));
+    else if (m.type === "compaction") chunks.push(renderCompaction(m));
+    else if (m.type === "skill") chunks.push(renderSystem(`Skill · ${m.name ?? m.skill ?? ""}`, "spark"));
+    else if (m.type === "synthetic" && m.text) chunks.push(renderSystem(m.description || m.text, "spark"));
+    else if (m.type === "system" && m.text) chunks.push(renderSystem(m.description || m.text, "spark"));
+    else if (m.type === "agent-switched") chunks.push(renderSystem(`Agent · ${m.agent ?? ""}`, "spark"));
+    else if (m.type === "model-switched") chunks.push(renderSystem(`Model · ${m.model?.id ?? ""}`, "spark"));
+    else if (m.type === "location-switched") chunks.push(renderSystem("Workspace changed", "folder"));
   }
-
   if (!chunks.length) {
     el.messages.innerHTML = `<div class="empty">${icon("spark")}<b>Fresh start</b>Ask anything, or type / for commands.</div>`;
     return;
@@ -652,6 +777,13 @@ function scheduleMessageRefresh(delay = 350) {
 function eventBelongsToOpenSession(data) {
   return data?.sessionID && state.session && data.sessionID === state.session.id;
 }
+
+// Live-only fragments: applied in place, never worth a refetch.
+const STREAM_FRAGMENTS = new Set([
+  "session.text.delta",
+  "session.reasoning.delta",
+  "session.tool.input.delta",
+]);
 
 function handleEvent(event) {
   const type = event.type;
@@ -790,6 +922,7 @@ function handleEvent(event) {
       break;
     }
     case "session.tool.success": {
+      refreshDiff();
       const m = ensureAssistant(data.assistantMessageID, data);
       const part = m.content.find((p) => p.type === "tool" && p.id === data.id);
       if (part) {
@@ -805,6 +938,7 @@ function handleEvent(event) {
       break;
     }
     case "session.tool.failed": {
+      refreshDiff();
       const m = ensureAssistant(data.assistantMessageID, data);
       const part = m.content.find((p) => p.type === "tool" && p.id === data.id);
       if (part) {
@@ -825,7 +959,30 @@ function handleEvent(event) {
     case "session.inbox.delivered":
       scheduleMessageRefresh(450);
       break;
+    case "session.usage.updated":
+      scheduleMessageRefresh(400);
+      break;
+    case "session.revert.staged":
+      state.revert = data.revert ?? state.revert;
+      updateRevertBanner();
+      break;
+    case "session.revert.cleared":
+    case "session.revert.committed":
+      state.revert = null;
+      updateRevertBanner();
+      break;
+    case "session.shell.ended":
+      refreshDiff();
+      break;
+    case "session.compaction.started":
+      setBusy(true);
+      scheduleMessageRefresh(300);
+      break;
     default:
+      // Any other event about this session (step, tool input, shell, skill, synthetic…)
+      // changes the transcript projection, so re-read it rather than guessing at it.
+      // Stream fragments are the exception: they are already applied above.
+      if (type.startsWith("session.") && !STREAM_FRAGMENTS.has(type)) scheduleMessageRefresh(300);
       break;
   }
 }
@@ -888,6 +1045,26 @@ function showPermissionSheet() {
 }
 
 /* ---------------------------------------------------------------- composer */
+
+/**
+ * Typing `@` opens the file picker, the way the TUI does it. Only fires on the
+ * char that starts a mention, and never while a sheet is already up.
+ */
+let mentionOpenedFor = null;
+function maybeOfferMentions() {
+  const value = el.input.value;
+  const caret = el.input.selectionStart ?? value.length;
+  const before = value.slice(0, caret);
+  const match = /(?:^|\s)@([^\s@]*)$/.exec(before);
+  if (!match) {
+    mentionOpenedFor = null;
+    return;
+  }
+  if (state.sheetOpen) return;
+  if (mentionOpenedFor === match[1]) return;
+  mentionOpenedFor = match[1];
+  openMentionSheet(match[1]);
+}
 
 function autoGrow() {
   el.input.style.height = "auto";
@@ -1030,10 +1207,655 @@ async function interrupt() {
   }
 }
 
+/* ------------------------------------------------------------------------ *
+ * OpenCode feature surface.
+ *
+ * Every call here maps to a route in the server's OpenAPI document, and the
+ * shapes match the schema package (SessionMessage.Info, FileDiff.Info, ...).
+ * Mobile rules applied throughout: nothing nested more than one sheet deep,
+ * every destructive action confirmed, no hover-only affordances.
+ * ------------------------------------------------------------------------ */
+
+const workspaceDir = () => state.session?.location?.directory ?? state.sessions?.[0]?.location?.directory;
+const toPosix = (p) => String(p ?? "").replace(/\\/g, "/");
+const baseName = (p) => toPosix(p).replace(/\/+$/, "").split("/").pop() || p;
+const parentDir = (p) => toPosix(p).replace(/\/+$/, "").split("/").slice(0, -1).join("/");
+
+const fmtCount = (n) => {
+  if (n == null) return "0";
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return (n / 1000).toFixed(n < 10_000 ? 1 : 0).replace(/\.0$/, "") + "k";
+  return (n / 1_000_000).toFixed(1).replace(/\.0$/, "") + "M";
+};
+
+const fmtCost = (usd) => {
+  const n = Number(usd ?? 0);
+  if (!n) return "";
+  return n < 0.01 ? "<$0.01" : "$" + n.toFixed(2);
+};
+
+/* ------------------------------------------------------------------ diff */
+
+async function refreshDiff() {
+  if (!state.api || !state.session) {
+    state.diff = [];
+    updateDiffChip();
+    return;
+  }
+  try {
+    state.diff = await state.api.sessionDiff(state.session.id);
+  } catch {
+    state.diff = [];
+  }
+  updateDiffChip();
+  if (state.sheetKind === "changes") openChangesSheet();
+}
+
+function updateDiffChip() {
+  const files = state.diff ?? [];
+  el.chatDiff.hidden = files.length === 0;
+  if (!files.length) return;
+  const adds = files.reduce((n, f) => n + (f.additions ?? 0), 0);
+  const dels = files.reduce((n, f) => n + (f.deletions ?? 0), 0);
+  el.chatDiffCount.textContent = files.length + "  +" + adds + " \u2212" + dels;
+}
+
+function diffLines(patch) {
+  return String(patch ?? "")
+    .split("\n")
+    .map((line) => {
+      const kind = /^(\+\+\+|---)/.test(line)
+        ? "meta"
+        : line.startsWith("+")
+          ? "add"
+          : line.startsWith("-")
+            ? "del"
+            : line.startsWith("@@")
+              ? "hunk"
+              : "ctx";
+      return '<i class="dl ' + kind + '">' + escapeHtml(line || " ") + "</i>";
+    })
+    .join("");
+}
+
+function openChangesSheet() {
+  const files = state.diff ?? [];
+  openSheet({
+    kind: "changes",
+    title: files.length ? files.length + " changed files" : "Changes",
+    body: (root) => {
+      if (!state.session) {
+        root.innerHTML = '<p class="sheet-note">Open a session first.</p>';
+        return;
+      }
+      if (!files.length) {
+        root.innerHTML = '<p class="sheet-note">No file changes in this session yet.</p>';
+        return;
+      }
+      const adds = files.reduce((n, f) => n + (f.additions ?? 0), 0);
+      const dels = files.reduce((n, f) => n + (f.deletions ?? 0), 0);
+      root.innerHTML =
+        '<p class="sheet-note">' +
+        files.length +
+        ' files \u00b7 <b class="adds">+' +
+        adds +
+        '</b> <b class="dels">\u2212' +
+        dels +
+        "</b></p>" +
+        '<div class="diff-list">' +
+        files
+          .map((f, i) => {
+            const status = f.status ?? "modified";
+            return (
+              '<div class="diff-file" data-file="' + i + '">' +
+              '<button class="diff-head" data-toggle-diff="' + i + '">' +
+              '<span class="df-status" data-s="' + escapeHtml(status) + '">' + escapeHtml(status.slice(0, 1).toUpperCase()) + "</span>" +
+              '<span class="df-text"><span class="df-name">' + escapeHtml(baseName(f.file)) + "</span>" +
+              '<span class="df-dir">' + escapeHtml(parentDir(f.file) || ".") + "</span></span>" +
+              '<span class="df-counts"><b class="adds">+' + (f.additions ?? 0) + '</b><b class="dels">\u2212' + (f.deletions ?? 0) + "</b></span>" +
+              icon("chevron", "caret") +
+              "</button>" +
+              '<div class="diff-body"><pre class="patch">' + diffLines(f.patch) + "</pre>" +
+              (f.more ? '<p class="sheet-note">Patch truncated by the server.</p>' : "") +
+              "</div></div>"
+            );
+          })
+          .join("") +
+        "</div>";
+      root.addEventListener("click", (e) => {
+        const btn = e.target.closest("[data-toggle-diff]");
+        if (!btn) return;
+        btn.closest(".diff-file").classList.toggle("open");
+      });
+    },
+  });
+}
+
+/* --------------------------------------------------------------- mentions */
+
+async function openMentionSheet(initial = "") {
+  if (!state.session) return;
+  openSheet({
+    kind: "mention",
+    title: "Mention a file",
+    body: (root) => {
+      root.innerHTML =
+        '<div class="sheet-search"><div class="search-box">' +
+        icon("search") +
+        '<input class="search-input" id="mention-search" placeholder="Search files by name" autocomplete="off" spellcheck="false"></div></div>' +
+        '<div class="sheet-list" id="mention-list"></div>';
+      const input = $("#mention-search", root);
+      const list = $("#mention-list", root);
+      let token = 0;
+
+      const search = async (q) => {
+        const mine = ++token;
+        const query = String(q ?? "").trim();
+        if (!query) {
+          list.innerHTML = '<p class="sheet-note">Start typing to search this workspace.</p>';
+          return;
+        }
+        list.innerHTML = '<p class="sheet-note">Searching...</p>';
+        let hits = [];
+        try {
+          hits = await state.api.findFiles(query, { directory: workspaceDir(), limit: 60 });
+        } catch (err) {
+          if (mine === token) list.innerHTML = '<p class="sheet-note">' + escapeHtml(err.message || "Search failed") + "</p>";
+          return;
+        }
+        if (mine !== token) return;
+        if (!hits.length) {
+          list.innerHTML = '<p class="sheet-note">No files match \u201c' + escapeHtml(query) + "\u201d.</p>";
+          return;
+        }
+        list.innerHTML = hits
+          .map(
+            (h) =>
+              '<button class="sheet-item" data-mention="' + escapeHtml(toPosix(h.path)) + '">' +
+              '<span class="si-icon">' + icon(h.type === "directory" ? "folder" : "file") + "</span>" +
+              '<span class="si-text"><span class="si-title">' + escapeHtml(baseName(h.path)) + "</span>" +
+              '<span class="si-sub">' + escapeHtml(parentDir(h.path) || ".") + "</span></span></button>"
+          )
+          .join("");
+      };
+
+      let timer = 0;
+      input.addEventListener("input", () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => search(input.value), 220);
+      });
+      input.addEventListener("keydown", (e) => {
+        if (e.key !== "Enter") return;
+        e.preventDefault();
+        clearTimeout(timer);
+        search(input.value);
+      });
+      list.addEventListener("click", (e) => {
+        const btn = e.target.closest("[data-mention]");
+        if (btn) insertMention(btn.dataset.mention);
+      });
+
+      if (initial) {
+        input.value = initial;
+        search(initial);
+      }
+      input.focus();
+    },
+  });
+}
+
+function insertMention(path) {
+  const value = el.input.value;
+  const caret = el.input.selectionStart ?? value.length;
+  const before = value.slice(0, caret);
+  // Replace a half-typed "@path" right before the caret, otherwise just append.
+  const match = /@([^\s@]*)$/.exec(before);
+  const mention = "@" + toPosix(path) + " ";
+  el.input.value = match
+    ? before.slice(0, match.index) + mention + value.slice(caret)
+    : before + mention + value.slice(caret);
+  const at = (match ? match.index : before.length) + mention.length;
+  el.input.focus();
+  el.input.setSelectionRange(at, at);
+  autoGrow();
+  updateSendButton();
+  closeSheet();
+  haptic(8);
+}
+
+/* ----------------------------------------------------------------- skills */
+
+function openSkillSheet() {
+  if (!state.session) return;
+  openSheet({
+    kind: "skills",
+    title: "Skills",
+    body: async (root) => {
+      root.innerHTML = '<p class="sheet-note">Loading skills...</p>';
+      let skills = [];
+      try {
+        skills = await state.api.skills({ directory: workspaceDir() });
+      } catch (err) {
+        root.innerHTML = '<p class="sheet-note">' + escapeHtml(err.message || "Could not load skills") + "</p>";
+        return;
+      }
+      if (!skills.length) {
+        root.innerHTML = '<p class="sheet-note">This workspace has no skills configured.</p>';
+        return;
+      }
+      root.innerHTML =
+        '<p class="sheet-note">Loading a skill puts its instructions into this session.</p><div class="sheet-list">' +
+        skills
+          .map(
+            (s) =>
+              '<button class="sheet-item" data-skill="' + escapeHtml(s.id) + '">' +
+              '<span class="si-icon">' + icon("book") + "</span>" +
+              '<span class="si-text"><span class="si-title">' + escapeHtml(s.name || s.id) + "</span>" +
+              '<span class="si-sub">' + escapeHtml(s.description || (s.autoinvoke ? "Auto-invoked" : "Manual")) + "</span></span></button>"
+          )
+          .join("") +
+        "</div>";
+      root.addEventListener("click", async (e) => {
+        const btn = e.target.closest("[data-skill]");
+        if (!btn) return;
+        try {
+          await state.api.activateSkill(state.session.id, btn.dataset.skill);
+          closeSheet();
+          toast("Skill loaded");
+          scheduleMessageRefresh(300);
+        } catch (err) {
+          handleError(err, "Could not load skill");
+        }
+      });
+    },
+  });
+}
+
+/* -------------------------------------------------------- session actions */
+
+function forkSession(session) {
+  openSheet({
+    kind: "fork",
+    title: "Fork session?",
+    body: (root) => {
+      root.innerHTML =
+        '<p class="sheet-note">Continues this conversation in a new session, leaving the original untouched.</p>' +
+        '<div class="permission-actions"><button class="btn btn-ghost" data-cancel>Cancel</button>' +
+        '<button class="btn btn-primary" data-confirm>Fork</button></div>';
+      root.addEventListener("click", async (e) => {
+        if (e.target.closest("[data-cancel]")) return closeSheet();
+        if (!e.target.closest("[data-confirm]")) return;
+        try {
+          const res = await state.api.forkSession(session.id);
+          const forked = res?.data;
+          closeSheet();
+          toast("Forked");
+          await refreshSessions(false).catch(() => {});
+          if (forked?.id) setTimeout(() => openSession(forked), 260);
+        } catch (err) {
+          handleError(err, "Could not fork");
+        }
+      });
+    },
+  });
+}
+
+function compactSession(session) {
+  openSheet({
+    kind: "compact",
+    title: "Compact context?",
+    body: (root) => {
+      root.innerHTML =
+        '<p class="sheet-note">Summarises the conversation so far so the session keeps going without running out of context.</p>' +
+        '<div class="permission-actions"><button class="btn btn-ghost" data-cancel>Cancel</button>' +
+        '<button class="btn btn-primary" data-confirm>Compact</button></div>';
+      root.addEventListener("click", async (e) => {
+        if (e.target.closest("[data-cancel]")) return closeSheet();
+        if (!e.target.closest("[data-confirm]")) return;
+        closeSheet();
+        try {
+          await state.api.compactSession(session.id);
+          toast("Compacting...");
+          scheduleMessageRefresh(600);
+        } catch (err) {
+          handleError(err, "Could not compact");
+        }
+      });
+    },
+  });
+}
+
+/**
+ * Undo. OpenCode rewinds to a message and restores the files it touched; the
+ * revert stays staged until it is kept or dropped, hence the banner.
+ */
+function openUndoSheet(session) {
+  const users = state.messages.filter((m) => m.type === "user");
+  const last = users[users.length - 1];
+  if (state.session?.id !== session.id || !last) {
+    toast("Open the session to undo a turn");
+    return;
+  }
+  const label = String(last.text ?? "").replace(/\s+/g, " ").trim().slice(0, 80);
+  openSheet({
+    kind: "undo",
+    title: "Undo last turn?",
+    body: (root) => {
+      root.innerHTML =
+        '<p class="sheet-note">Rewinds the conversation to before \u201c' +
+        escapeHtml(label || "your last prompt") +
+        "\u201d and restores the files changed since. You can keep or drop it afterwards.</p>" +
+        '<div class="permission-actions"><button class="btn btn-ghost" data-cancel>Cancel</button>' +
+        '<button class="btn btn-primary" data-confirm>Rewind</button></div>';
+      root.addEventListener("click", async (e) => {
+        if (e.target.closest("[data-cancel]")) return closeSheet();
+        if (!e.target.closest("[data-confirm]")) return;
+        try {
+          const res = await state.api.stageRevert(session.id, last.id, true);
+          state.revert = res ?? { messageID: last.id };
+          closeSheet();
+          updateRevertBanner();
+          await loadMessages();
+          refreshDiff();
+          toast("Rewound");
+        } catch (err) {
+          handleError(err, "Could not undo");
+        }
+      });
+    },
+  });
+}
+
+function updateRevertBanner() {
+  el.revertBanner.hidden = !state.revert;
+  if (!state.revert) return;
+  const files = state.revert.files ?? [];
+  const text = $(".rev-text", el.revertBanner);
+  if (!text) return;
+  text.textContent = files.length
+    ? "Rewound \u00b7 " + files.length + (files.length === 1 ? " file restored" : " files restored")
+    : "Rewound \u00b7 transcript only";
+}
+
+async function resolveRevert(keep) {
+  if (!state.session) return;
+  try {
+    if (keep) await state.api.commitRevert(state.session.id);
+    else await state.api.clearRevert(state.session.id);
+    state.revert = null;
+    updateRevertBanner();
+    await loadMessages();
+    refreshDiff();
+    toast(keep ? "Kept" : "Restored");
+  } catch (err) {
+    handleError(err, "Could not resolve undo");
+  }
+}
+
+function copyTranscript(session) {
+  const quote = String.fromCharCode(96);
+  const lines = [];
+  for (const m of state.messages) {
+    if (m.type === "user") lines.push("## You\n\n" + (m.text ?? ""));
+    else if (m.type === "assistant") {
+      const body = (m.content ?? [])
+        .map((p) => {
+          if (p.type === "text") return p.text;
+          if (p.type === "reasoning") return "> " + String(p.text ?? "").replace(/\n/g, "\n> ");
+          if (p.type === "tool") return "_" + (p.name ?? "tool") + " \u2014 " + (p.state?.status ?? "") + "_";
+          return "";
+        })
+        .filter(Boolean)
+        .join("\n\n");
+      if (body) lines.push("## Assistant\n\n" + body);
+    } else if (m.type === "system" && m.text) lines.push("_" + (m.description || m.text) + "_");
+  }
+  const text =
+    "# " + (session.title || "Session") + "\n\n" + quote + session.id + quote + "\n\n" + lines.join("\n\n") + "\n";
+  closeSheet();
+  setTimeout(async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast("Transcript copied");
+    } catch {
+      const blob = new Blob([text], { type: "text/markdown" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = (session.title || "session").replace(/[^\w.-]+/g, "-").slice(0, 60) + ".md";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+      toast("Transcript downloaded");
+    }
+  }, 220);
+}
+
+async function archiveSession(session, archived) {
+  try {
+    await state.api.updateSession(session.id, { archived });
+    closeSheet();
+    toast(archived ? "Archived" : "Unarchived");
+    await refreshSessions(false).catch(() => {});
+    if (archived && state.session?.id === session.id) closeChat(false);
+  } catch (err) {
+    handleError(err, archived ? "Could not archive" : "Could not unarchive");
+  }
+}
+
+function openShellSheet(session) {
+  openSheet({
+    kind: "shell",
+    title: "Run a command",
+    body: (root) => {
+      root.innerHTML =
+        '<label class="field"><span class="label">Shell command</span>' +
+        '<input class="input" id="shell-input" placeholder="git status" autocomplete="off" spellcheck="false" autocapitalize="off"></label>' +
+        '<p class="sheet-note">Runs through OpenCode and lands in the transcript as output.</p>' +
+        '<button class="btn btn-primary btn-block" id="shell-run">Run</button>';
+      const input = $("#shell-input", root);
+      const go = async () => {
+        const command = input.value.trim();
+        if (!command) return;
+        closeSheet();
+        try {
+          await state.api.runShell(session.id, command);
+          toast("Running " + command.split(/\s+/)[0]);
+          scheduleMessageRefresh(400);
+        } catch (err) {
+          handleError(err, "Could not run command");
+        }
+      };
+      $("#shell-run", root).addEventListener("click", go);
+      input.addEventListener("keydown", (e) => {
+        if (e.key !== "Enter") return;
+        e.preventDefault();
+        go();
+      });
+      input.focus();
+    },
+  });
+}
+
+/* --------------------------------------------------------------- settings */
+
+function openSavedPermissionsSheet() {
+  openSheet({
+    kind: "permissions",
+    title: "Always allowed",
+    body: async (root) => {
+      root.innerHTML = '<p class="sheet-note">Loading...</p>';
+      let rules = [];
+      try {
+        rules = await state.api.savedPermissions(state.session?.projectID);
+      } catch (err) {
+        root.innerHTML = '<p class="sheet-note">' + escapeHtml(err.message || "Could not load rules") + "</p>";
+        return;
+      }
+      if (!rules.length) {
+        root.innerHTML =
+          '<p class="sheet-note">Nothing is pre-approved. Answering a request with \u201cAlways\u201d adds a rule here.</p>';
+        return;
+      }
+      root.innerHTML =
+        '<p class="sheet-note">Requests matching these rules are approved without asking.</p><div class="sheet-list">' +
+        rules
+          .map(
+            (r) =>
+              '<div class="sheet-item"><span class="si-icon">' + icon("shield") + "</span>" +
+              '<span class="si-text"><span class="si-title">' + escapeHtml(r.action) + " " + escapeHtml(r.resource) + "</span>" +
+              '<span class="si-sub">' + escapeHtml(new Date(r.time?.created ?? Date.now()).toLocaleDateString()) + "</span></span>" +
+              '<button class="rule-remove" data-rule="' + escapeHtml(r.id) + '" aria-label="Remove rule">' + icon("x") + "</button></div>"
+          )
+          .join("") +
+        "</div>";
+      root.addEventListener("click", async (e) => {
+        const btn = e.target.closest("[data-rule]");
+        if (!btn) return;
+        try {
+          await state.api.removeSavedPermission(btn.dataset.rule);
+          btn.closest(".sheet-item").remove();
+          haptic(10);
+        } catch (err) {
+          handleError(err, "Could not remove rule");
+        }
+      });
+    },
+  });
+}
+
+function openMcpSheet() {
+  openSheet({
+    kind: "mcp",
+    title: "MCP servers",
+    body: async (root) => {
+      root.innerHTML = '<p class="sheet-note">Loading...</p>';
+      let servers = [];
+      try {
+        servers = await state.api.mcpServers({ directory: workspaceDir() });
+      } catch (err) {
+        root.innerHTML = '<p class="sheet-note">' + escapeHtml(err.message || "Could not load servers") + "</p>";
+        return;
+      }
+      if (!servers.length) {
+        root.innerHTML = '<p class="sheet-note">No MCP servers configured for this project.</p>';
+        return;
+      }
+      root.innerHTML =
+        '<p class="sheet-note">' + servers.length + " servers configured.</p><div class=\"sheet-list\">" +
+        servers
+          .map((s) => {
+            const status = s.status?.status ?? "unknown";
+            const detail = s.status?.error ? String(s.status.error).slice(0, 100) : status;
+            return (
+              '<div class="sheet-item"><span class="dot-status" data-s="' + escapeHtml(status) + '"></span>' +
+              '<span class="si-text"><span class="si-title">' + escapeHtml(s.title || s.name) + "</span>" +
+              '<span class="si-sub">' + escapeHtml(detail) + "</span></span></div>"
+            );
+          })
+          .join("") +
+        "</div>";
+    },
+  });
+}
+
+function openProvidersSheet() {
+  openSheet({
+    kind: "providers",
+    title: "Providers",
+    body: async (root) => {
+      root.innerHTML = '<p class="sheet-note">Loading...</p>';
+      let providers = [];
+      try {
+        providers = await state.api.providers({ directory: workspaceDir() });
+      } catch (err) {
+        root.innerHTML = '<p class="sheet-note">' + escapeHtml(err.message || "Could not load providers") + "</p>";
+        return;
+      }
+      if (!providers.length) {
+        root.innerHTML = '<p class="sheet-note">No providers configured.</p>';
+        return;
+      }
+      const order = { enabled: 0, auto: 1, disabled: 2 };
+      root.innerHTML =
+        '<p class="sheet-note">Which model providers this OpenCode can reach. Keys are configured on the host.</p><div class="sheet-list">' +
+        [...providers]
+          .sort((a, b) => (order[a.activation] ?? 9) - (order[b.activation] ?? 9))
+          .map(
+            (p) =>
+              '<div class="sheet-item"><span class="si-icon">' + icon("plug") + "</span>" +
+              '<span class="si-text"><span class="si-title">' + escapeHtml(p.name || p.id) + "</span>" +
+              '<span class="si-sub">' + escapeHtml(p.activation) + "</span></span></div>"
+          )
+          .join("") +
+        "</div>";
+    },
+  });
+}
+
+function openStatsSheet() {
+  openSheet({
+    kind: "stats",
+    title: "Usage",
+    body: async (root) => {
+      root.innerHTML = '<p class="sheet-note">Loading...</p>';
+      let s = null;
+      try {
+        s = await state.api.stats({});
+      } catch (err) {
+        root.innerHTML = '<p class="sheet-note">' + escapeHtml(err.message || "Could not load usage") + "</p>";
+        return;
+      }
+      if (!s) {
+        root.innerHTML = '<p class="sheet-note">No usage recorded yet.</p>';
+        return;
+      }
+      const t = s.tokens ?? {};
+      const rows = [
+        ["Sessions", fmtCount(s.sessions)],
+        ["Prompts", fmtCount(s.prompts)],
+        ["Steps", fmtCount(s.steps)],
+        ["Input tokens", fmtCount(t.input)],
+        ["Output tokens", fmtCount(t.output)],
+        ["Cache reads", fmtCount(t.cache?.read)],
+        ["Spend", fmtCost(s.cost) || "$0.00"],
+        ["Active days", fmtCount(s.activeDays) + (s.streak ? " \u00b7 " + s.streak + " day streak" : "")],
+      ];
+      root.innerHTML =
+        '<div class="settings-grid">' +
+        rows
+          .map(
+            (r) =>
+              '<div class="setting-row"><div class="setting-text"><div class="setting-title">' + escapeHtml(r[0]) +
+              '</div></div><div class="setting-value">' + escapeHtml(r[1]) + "</div></div>"
+          )
+          .join("") +
+        "</div>";
+    },
+  });
+}
+
+/* ------------------------------------------------------------ usage footer */
+
+function usageLine(m) {
+  const t = m.tokens;
+  const cost = fmtCost(m.cost);
+  if (!t && !cost) return "";
+  const bits = [];
+  if (t) {
+    if (t.input != null) bits.push(fmtCount(t.input) + " in");
+    if (t.output != null) bits.push(fmtCount(t.output) + " out");
+    if (t.cache?.read) bits.push(fmtCount(t.cache.read) + " cached");
+  }
+  if (cost) bits.push(cost);
+  if (!bits.length) return "";
+  return '<div class="usage-line">' + escapeHtml(bits.join(" \u00b7 ")) + "</div>";
+}
+
 /* ---------------------------------------------------------------- sheets */
 
-function openSheet({ title, body, onClose }) {
+function openSheet({ title, body, onClose, kind = null }) {
   clearTimeout(state.sheetCloseTimer);
+  state.sheetKind = kind;
   if (state.sheetOpen) {
     // Swap content of the open sheet without pushing another history entry.
     el.sheetTitle.textContent = title;
@@ -1075,6 +1897,7 @@ function closeSheet(fromPop = false) {
   }, 340);
   state.sheetOnClose?.();
   state.sheetOnClose = null;
+  state.sheetKind = null;
 }
 
 function sheetRow({ iconName, title, sub, selected, danger, attrs = "", check = true }) {
@@ -1291,6 +2114,22 @@ function sessionActions(session) {
         <p class="sheet-note">${escapeHtml(session.location?.directory || "")}</p>
         <div class="sheet-list">
           ${sheetRow({ iconName: "edit", title: "Rename", attrs: "data-action=rename" })}
+          ${
+            state.diff?.length
+              ? sheetRow({ iconName: "diff", title: "Changes", sub: state.diff.length + " files touched here", attrs: "data-action=changes" })
+              : ""
+          }
+          ${sheetRow({ iconName: "branch", title: "Fork session", sub: "Continue in a copy", attrs: "data-action=fork" })}
+          ${sheetRow({ iconName: "undo", title: "Undo last turn", sub: "Rewind and restore files", attrs: "data-action=undo" })}
+          ${sheetRow({ iconName: "refresh", title: "Compact context", sub: "Summarise to free context", attrs: "data-action=compact" })}
+          ${sheetRow({ iconName: "terminal", title: "Run a command", sub: "Shell inside this session", attrs: "data-action=shell" })}
+          ${sheetRow({ iconName: "book", title: "Load a skill", attrs: "data-action=skills" })}
+          ${sheetRow({ iconName: "copy", title: "Copy transcript", sub: "Conversation as Markdown", attrs: "data-action=copy" })}
+          ${
+            session.time?.archived
+              ? sheetRow({ iconName: "archive", title: "Unarchive", attrs: "data-action=unarchive" })
+              : sheetRow({ iconName: "archive", title: "Archive", sub: "Hide from the list", attrs: "data-action=archive" })
+          }
           ${busy ? sheetRow({ iconName: "stop", title: "Stop run", attrs: "data-action=stop" }) : ""}
           ${sheetRow({ iconName: "settings", title: "Session info", attrs: "data-action=info" })}
           ${sheetRow({ iconName: "trash", title: "Delete session", danger: true, attrs: "data-action=delete" })}
@@ -1299,10 +2138,19 @@ function sessionActions(session) {
         const btn = e.target.closest("[data-action]");
         if (!btn) return;
         const action = btn.dataset.action;
+        if (action === "copy") return copyTranscript(session);
+        if (action === "archive") return archiveSession(session, true);
+        if (action === "unarchive") return archiveSession(session, false);
+        if (action === "rename") return renameSession(session);
+        if (action === "delete") return deleteSession(session);
+        if (action === "info") return sessionInfo(session);
+        if (action === "changes") return openChangesSheet();
+        if (action === "fork") return forkSession(session);
+        if (action === "undo") return openUndoSheet(session);
+        if (action === "compact") return compactSession(session);
+        if (action === "shell") return openShellSheet(session);
+        if (action === "skills") return openSkillSheet();
         closeSheet();
-        if (action === "rename") setTimeout(() => renameSession(session), 200);
-        if (action === "delete") setTimeout(() => deleteSession(session), 200);
-        if (action === "info") setTimeout(() => sessionInfo(session), 200);
         if (action === "stop") {
           state.api.interrupt(session.id).then(() => toast("Stopping…")).catch((err) => handleError(err, "Could not stop"));
         }
@@ -1386,8 +2234,12 @@ function sessionInfo(session) {
         ["Model", session.model ? `${session.model.providerID}/${session.model.id}` : "—"],
         ["Created", new Date(session.time?.created ?? Date.now()).toLocaleString()],
         ["Updated", new Date(session.time?.updated ?? Date.now()).toLocaleString()],
-        ["Tokens in", String(session.tokens?.input ?? 0)],
-        ["Tokens out", String(session.tokens?.output ?? 0)],
+        ["Tokens in", fmtCount(session.tokens?.input ?? 0)],
+        ["Tokens out", fmtCount(session.tokens?.output ?? 0)],
+        ["Cache reads", fmtCount(session.tokens?.cache?.read ?? 0)],
+        ["Cost", fmtCost(session.cost) || "$0.00"],
+        ["Outcome", session.outcome ?? "running"],
+        ["Archived", session.time?.archived ? new Date(session.time.archived).toLocaleString() : "no"],
       ];
       root.innerHTML = `<div class="settings-grid">${rows
         .map(
@@ -1491,6 +2343,14 @@ async function openNewSession() {
 
 let deferredInstall = null;
 
+function sheetSettingRow(iconName, title, sub, id) {
+  return `<button class="setting-row" id="${id}">` +
+    `<div class="setting-text"><div class="setting-title">${escapeHtml(title)}</div>` +
+    `<div class="setting-sub">${escapeHtml(sub)}</div></div>` +
+    `<span class="si-icon">${icon(iconName)}</span>` +
+    `</button>`;
+}
+
 function openSettings() {
   openSheet({
     title: "Settings",
@@ -1524,6 +2384,11 @@ function openSettings() {
                 </div>`
           }
           ${state.info ? `<div class="setting-row"><div class="setting-text"><div class="setting-title">Version</div><div class="setting-sub">${escapeHtml(serverLabel)}</div></div></div>` : ""}
+          ${sheetSettingRow("shield", "Permissions", "Rules that skip the approval sheet", "saved-permissions")}
+          ${sheetSettingRow("plug", "MCP servers", "Tools connected to this workspace", "open-mcp")}
+          ${sheetSettingRow("cpu", "Providers", "Model providers this server reaches", "open-providers")}
+          ${sheetSettingRow("book", "Skills", "Instructions available to the agent", "open-skills")}
+          ${sheetSettingRow("spark", "Usage", "Tokens and spend across sessions", "open-stats")}
           ${
             deferredInstall
               ? `<div class="setting-row"><div class="setting-text"><div class="setting-title">Install app</div><div class="setting-sub">Add OpenCode Pocket to your home screen</div></div><button class="btn btn-primary" style="height:38px;padding:0 14px;font-size:12.5px" id="install-app">Install</button></div>`
@@ -1563,6 +2428,26 @@ function openSettings() {
         if (e.target.closest("#edit-conn")) {
           closeSheet();
           setTimeout(openConnectionSheet, 220);
+        }
+        if (e.target.closest("#saved-permissions")) {
+          openSavedPermissionsSheet();
+          return;
+        }
+        if (e.target.closest("#open-mcp")) {
+          openMcpSheet();
+          return;
+        }
+        if (e.target.closest("#open-providers")) {
+          openProvidersSheet();
+          return;
+        }
+        if (e.target.closest("#open-skills")) {
+          openSkillSheet();
+          return;
+        }
+        if (e.target.closest("#open-stats")) {
+          openStatsSheet();
+          return;
         }
         if (e.target.closest("#disconnect")) {
           closeSheet();
@@ -1790,6 +2675,7 @@ function bindEvents() {
     autoGrow();
     updateSendButton();
     maybeShowCommandHints();
+    maybeOfferMentions();
   });
   el.input.addEventListener("keydown", (e) => {
     if (e.key !== "Enter" || e.shiftKey || e.isComposing) return;
@@ -1817,6 +2703,13 @@ function bindEvents() {
     state.attachments.splice(Number(btn.dataset.removeAttach), 1);
     renderAttachments();
     updateSendButton();
+  });
+
+  el.btnMention.addEventListener("click", () => openMentionSheet());
+  el.chatDiff.addEventListener("click", () => openChangesSheet());
+  el.revertBanner.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-revert]");
+    if (btn) resolveRevert(btn.dataset.revert === "keep");
   });
 
   // sheet

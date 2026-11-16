@@ -351,6 +351,27 @@ svg { display: block; }
 }
 .msg-system .sys svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
 
+.failure {
+  width: 100%; text-align: left; background: var(--danger-soft);
+  border: 1px solid color-mix(in srgb, var(--danger) 20%, transparent);
+  border-radius: 12px; padding: 10px 12px;
+}
+.failure-head {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 11.5px; font-weight: 600; color: var(--danger); margin-bottom: 4px;
+}
+.failure-head svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.failure-text { font-size: 12.5px; line-height: 1.5; color: var(--text); }
+.failure-hint { font-size: 11.5px; line-height: 1.5; color: var(--muted); margin-top: 5px; }
+
+.assistant-note {
+  display: inline-flex; align-items: center; gap: 5px; margin: 8px 0 2px;
+  font-size: 11px; color: var(--muted-2); background: var(--soft);
+  padding: 4px 10px; border-radius: 99px;
+}
+.assistant-note svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.assistant-body > .msg-system .failure { margin-top: 2px; }
+
 /* markdown */
 .md > *:first-child { margin-top: 0; }
 .md > *:last-child { margin-bottom: 0; }
@@ -613,3 +634,91 @@ svg { display: block; }
 }
 
 [hidden] { display: none !important; }
+
+/* ---- opencode feature surface ------------------------------------------- */
+
+/* changed-file chip in the chat header */
+.diff-chip {
+  display: inline-flex; align-items: center; gap: 5px; flex: none;
+  height: 28px; padding: 0 9px; border-radius: 99px;
+  background: var(--soft); border: 1px solid var(--line);
+  color: var(--muted); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums;
+}
+.diff-chip:active { background: var(--soft-2); color: var(--text); }
+.diff-chip svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+
+/* staged-undo banner above the composer */
+.revert-banner {
+  width: 100%; display: flex; align-items: center; gap: 8px;
+  margin: 0 0 7px; padding: 9px 12px; border-radius: 12px;
+  background: color-mix(in srgb, var(--accent) 9%, var(--elev));
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line));
+  font-size: 12.5px; font-weight: 500; color: var(--text); text-align: left;
+}
+.revert-banner .rev-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.revert-banner .rev-actions { display: flex; gap: 6px; flex: none; }
+.revert-banner .rev-btn {
+  padding: 4px 10px; border-radius: 99px; font-size: 12px; font-weight: 600;
+  background: var(--elev); border: 1px solid var(--line); color: var(--text);
+}
+.revert-banner .rev-btn[data-revert="keep"] { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 30%, var(--line)); }
+.revert-banner .rev-btn:active { background: var(--soft); }
+
+/* diff list */
+.adds { color: var(--ok, #16a34a); }
+.dels { color: var(--danger); }
+.diff-list { display: flex; flex-direction: column; gap: 8px; }
+.diff-file { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--elev); }
+.diff-head {
+  width: 100%; display: flex; align-items: center; gap: 9px; padding: 10px 11px; text-align: left;
+}
+.diff-head:active { background: var(--soft); }
+.df-status {
+  width: 20px; height: 20px; border-radius: 6px; flex: none; display: grid; place-items: center;
+  font-size: 10.5px; font-weight: 700; color: var(--muted); background: var(--soft-2);
+}
+.df-status[data-s="added"] { color: var(--ok); background: color-mix(in srgb, var(--ok) 14%, transparent); }
+.df-status[data-s="deleted"] { color: var(--danger); background: var(--danger-soft); }
+.df-status[data-s="modified"] { color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); }
+.df-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.df-name { font-size: 12.5px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.df-dir { font-size: 10.5px; color: var(--muted-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.df-counts { display: flex; gap: 6px; flex: none; font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.diff-head .caret { width: 15px; height: 15px; flex: none; fill: none; stroke: var(--muted-2); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; transform: rotate(90deg); transition: transform 0.18s; }
+.diff-file.open .diff-head .caret { transform: rotate(-90deg); }
+.diff-body { display: none; border-top: 1px solid var(--line); }
+.diff-file.open .diff-body { display: block; }
+.patch {
+  margin: 0; padding: 9px 10px; overflow-x: auto; -webkit-overflow-scrolling: touch;
+  font-family: var(--mono); font-size: 11px; line-height: 1.5; background: var(--soft);
+}
+.patch .dl { display: block; white-space: pre; font-style: normal; }
+.patch .dl.add { color: var(--ok); background: color-mix(in srgb, var(--ok) 10%, transparent); }
+.patch .dl.del { color: var(--danger); background: var(--danger-soft); }
+.patch .dl.hunk { color: var(--accent); }
+.patch .dl.meta { color: var(--muted-2); }
+
+/* per-message usage footer */
+.usage-line {
+  margin-top: 5px; font-size: 10.5px; color: var(--muted-2);
+  font-variant-numeric: tabular-nums; letter-spacing: 0.01em;
+}
+
+/* status dots in list rows */
+.dot-status { width: 8px; height: 8px; border-radius: 99px; flex: none; background: var(--muted-2); margin: 0 11px; }
+.dot-status[data-s="connected"] { background: var(--ok); }
+.dot-status[data-s="pending"] { background: var(--warn); }
+.dot-status[data-s="failed"] { background: var(--danger); }
+.dot-status[data-s="needs_auth"] { background: var(--warn); }
+.dot-status[data-s="disabled"] { background: var(--line-strong); }
+
+/* destructive affordance inside a list row */
+.rule-remove {
+  width: 30px; height: 30px; border-radius: 99px; flex: none; display: grid; place-items: center;
+  color: var(--muted-2); background: var(--soft);
+}
+.rule-remove:active { background: var(--danger-soft); color: var(--danger); }
+.rule-remove svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+
+.setting-value { font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; flex: none; }
+button.setting-row { width: 100%; text-align: left; background: none; border: 0; }
