@@ -97,14 +97,21 @@ chmod +x start.sh
    git clone https://github.com/shivapal12395-droid/opencode-pocket.git
    cd opencode-pocket
    chmod +x start.sh
-   OPENCODE_CMD="oc serve --hostname 127.0.0.1 --port 4096" ./start.sh
+   OPENCODE_CMD="oc ~/projects serve --hostname 127.0.0.1 --port 4096" ./start.sh
    ```
 
-   `start.sh` boots the server through `oc`, waits for the **server password**, prints it, and opens Chrome at `http://127.0.0.1:8099`. Paste that password into the app (or run `oc pair` in another Termux session and paste the whole link).
+   `~/projects` is created by the installer — passing it first stops `oc` offering to create
+   a project called "serve" instead of running the command. `start.sh` boots the server
+   through `oc`, waits for the **server password**, prints it, and opens Chrome at
+   `http://127.0.0.1:8099`. Paste that password into the app (or run `oc pair` in another
+   Termux session and paste the whole link).
 
 4. In Chrome: menu → **Add to Home screen**. From then on, one tap opens Pocket.
 
-**Starting it again later:** two Termux sessions, or one command with `OPENCODE_CMD` as above. If the server is already running, `start.sh` skips it and just serves the UI — get the password from the server's terminal or run `oc pair`.
+**Two-terminal variant (if the one-liner misbehaves):** terminal 1 → `oc shell`, then
+`cd ~/projects && opencode serve --hostname 127.0.0.1 --port 4096`; terminal 2 →
+`cd ~/opencode-pocket && ./start.sh`. Pocket detects the running server and just
+serves the UI. Get the password from the server terminal or run `oc pair`.
 
 > **Android battery:** long sessions can be killed by the phantom-process killer. Disable battery optimisation for Termux, or run `termux-wake-lock` before starting to keep the CPU awake.
 
