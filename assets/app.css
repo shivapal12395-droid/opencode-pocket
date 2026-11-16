@@ -1142,3 +1142,30 @@ button.setting-row { width: 100%; text-align: left; background: none; border: 0;
 .prefs-foot { padding: 16px 0 8px; }
 .prefs-foot .btn { width: 100%; }
 .seg { flex: 0 0 auto; }
+
+/* ---- unread, failed runs, find, branch chip ----------------------------- */
+.session-unread {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--accent); flex: 0 0 auto;
+}
+.session-failed {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: #f87171; flex: 0 0 auto;
+}
+.session-row.unread .session-title { font-weight: 700; }
+
+.branch-chip {
+  max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 10.5px; font-family: var(--mono); color: var(--muted);
+  border: 1px solid var(--line); border-radius: 7px; padding: 3px 6px;
+}
+
+.msg.flash { animation: flash-msg 1.1s var(--ease); }
+@keyframes flash-msg {
+  0% { background: var(--accent-soft); }
+  100% { background: transparent; }
+}
+
+.find-hit { align-items: flex-start; }
+.find-hit .si-sub { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.find-time { font-size: 10.5px; color: var(--muted-2); flex: 0 0 auto; margin-left: 8px; }

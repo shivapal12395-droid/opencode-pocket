@@ -324,6 +324,9 @@ const DIFFS = [
 
 const clone = (v) => JSON.parse(JSON.stringify(v));
 
+// One session was opened after its last turn, one was not: the list needs both
+// states to look right.
+SESSIONS.find((s) => s.id === "ses_demo2").time.viewed = now() - 5 * hour;
 /* ---- extra demo sessions: artifacts, long code, diagrams, documents ------
    These exist so the public demo exercises the same surfaces a real session
    does: a full HTML page, a real file, a diagram and a structured document. */
@@ -712,6 +715,25 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
     return "// " + path + "\n// demo mode: file contents are not fetched\n";
   }
 
+  async vcsStatus() {
+    return { data: [{ path: "src/auth/session.ts", status: "M" }, { path: "src/http/rate-limit.ts", status: "A" }] };
+  }
+
+  async vcsBranch() {
+    return { branch: "fix/session-ttl" };
+  }
+
+  async exportSession(id) {
+    return {
+      info: clone(this.sessionList.find((s) => s.id === id) ?? {}),
+      messages: clone(this.messageMap[id] ?? []),
+    };
+  }
+
+  async request() {
+    return { ok: true };
+  }
+
   async sessionDiff() {
     return clone(this.diffs);
   }
@@ -752,7 +774,9 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
     return {};
   }
 
-  async viewSession() {
+  async viewSession(id) {
+    const s = this.sessionList.find((x) => x.id === id);
+    if (s) s.time.viewed = now();
     return {};
   }
 

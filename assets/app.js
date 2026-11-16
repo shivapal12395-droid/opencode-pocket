@@ -123,6 +123,8 @@ function cacheDom() {
   el.chipAgent = $("#chip-agent");
   el.chatStatus = $("#chat-status");
   el.chatDiff = $("#chat-diff");
+  el.chatBranch = $("#chat-branch");
+  el.chatFind = $("#chat-find");
   el.chatDiffCount = $("#chat-diff-count");
   el.revertBanner = $("#revert-banner");
   el.btnMention = $("#btn-mention");
@@ -339,11 +341,18 @@ function renderSessions() {
             .map((s) => {
               const busy = (s.time?.busy ?? 0) > (s.time?.idle ?? 0);
               const title = s.title?.trim() || "Untitled session";
+              // Unread is the server's own clock: updated after the last view.
+              // Unread means the server recorded a view and the session moved on
+              // since. No watermark at all is not "unread", it is "never opened".
+              const unread =
+                s.time?.viewed != null && (s.time?.updated ?? 0) > s.time.viewed && !busy;
+              const failed = s.outcome === "failed";
               return `
-                <div class="session-row${state.session?.id === s.id ? " active" : ""}" data-id="${escapeHtml(s.id)}">
+                <div class="session-row${state.session?.id === s.id ? " active" : ""}${unread ? " unread" : ""}" data-id="${escapeHtml(s.id)}">
                   <button class="session-main" data-open="${escapeHtml(s.id)}">
                     <span class="session-title">${escapeHtml(title)}</span>
-                    ${busy ? `<span class="session-busy"></span>` : ""}
+                    ${failed ? `<span class="session-failed" title="Last run failed"></span>` : ""}
+                    ${busy ? `<span class="session-busy"></span>` : `${unread ? `<span class="session-unread"></span>` : ""}`}
                     <span class="session-time">${timeAgo(s.time?.updated ?? s.time?.created)}</span>
                   </button>
                   <button class="session-more" data-more="${escapeHtml(s.id)}" aria-label="Session actions">${icon("more")}</button>
@@ -568,6 +577,7 @@ async function openSession(sessionOrId) {
   // Fire and forget: the watermark and the change list are decorations.
   if (session.time?.idle) state.api.viewSession(session.id, session.time.idle).catch(() => {});
   refreshDiff();
+  refreshVcs();
 }
 
 function closeChat(fromPop = false) {
@@ -1886,6 +1896,126 @@ function diffLines(patch) {
     .join("");
 }
 
+/* ------------------------------------------------------- find and export */
+
+/** Find a prompt or answer in the open conversation and jump to it. */
+function openFindSheet() {
+  if (!state.session) return;
+  const rows = state.messages
+    .map((m, i) => ({ m, i }))
+    .filter(({ m }) => m.type === "user" || m.type === "assistant");
+
+  const textOf = (m) => messageText(m).replace(/\s+/g, " ").trim();
+
+  openSheet({
+    kind: "find",
+    title: "Find in conversation",
+    body: (root) => {
+      root.innerHTML = `
+        <label class="field"><input class="input" id="find-q" placeholder="Search this conversation" spellcheck="false" autocomplete="off"></label>
+        <div class="sheet-list" id="find-results"></div>`;
+      const input = root.querySelector("#find-q");
+      const results = root.querySelector("#find-results");
+
+      const paint = (q) => {
+        const needle = q.trim().toLowerCase();
+        const hits = rows.filter(({ m }) => !needle || textOf(m).toLowerCase().includes(needle)).slice(0, 40);
+        results.innerHTML = hits.length
+          ? hits
+              .map(({ m, i }) => {
+                const text = textOf(m) || "(empty)";
+                const label = m.type === "user" ? "You" : "Agent";
+                const short = text.length > 120 ? text.slice(0, 119) + "..." : text;
+                return `<button class="sheet-item find-hit" data-jump="${i}">
+                  <span class="si-text"><span class="si-title">${escapeHtml(label)}</span><span class="si-sub">${escapeHtml(short)}</span></span>
+                  <span class="find-time">${escapeHtml(timeAgo(m.time?.created))}</span>
+                </button>`;
+              })
+              .join("")
+          : `<div class="sheet-note">Nothing matches that.</div>`;
+      };
+
+      input.addEventListener("input", () => paint(input.value));
+      paint("");
+
+      results.addEventListener("click", (e) => {
+        const hit = e.target.closest("[data-jump]");
+        if (!hit) return;
+        const idx = Number(hit.dataset.jump);
+        const target = state.messages[idx];
+        closeSheet();
+        setTimeout(() => jumpToMessage(target?.id), 220);
+      });
+    },
+  });
+}
+
+function jumpToMessage(id) {
+  if (!id) return;
+  const node = el.messages.querySelector(`[data-msg="${CSS.escape(id)}"]`);
+  if (!node) {
+    toast("That message is not loaded");
+    return;
+  }
+  node.scrollIntoView({ block: "center", behavior: state.prefs.reducedMotion ? "auto" : "smooth" });
+  node.classList.add("flash");
+  setTimeout(() => node.classList.remove("flash"), 1200);
+  updateJumpLatest();
+}
+
+/** Session export / import. The payload is exactly what the server returns. */
+async function exportSession(session) {
+  if (!session) return;
+  try {
+    const data = await state.api.exportSession(session.id);
+    const name = (session.title || "session").replace(/[^\w.-]+/g, "-").slice(0, 60);
+    downloadText(name + ".json", JSON.stringify(data, null, 2), "application/json");
+  } catch (err) {
+    handleError(err, "Could not export this session");
+  }
+}
+
+function importSession() {
+  const picker = document.createElement("input");
+  picker.type = "file";
+  picker.accept = "application/json,.json";
+  picker.addEventListener("change", async () => {
+    const file = picker.files?.[0];
+    if (!file) return;
+    try {
+      const payload = JSON.parse(await file.text());
+      if (!payload?.info || !payload?.messages) {
+        toast("That file is not a session export");
+        return;
+      }
+      await state.api.request("POST", "/api/experimental/session/import", payload, { timeout: 120000 });
+      toast("Session imported");
+      refreshSessions(true).catch(() => {});
+    } catch (err) {
+      handleError(err, "Could not import that file");
+    }
+  });
+  picker.click();
+}
+
+/** Branch and dirty count for the open session's workspace. */
+async function refreshVcs() {
+  if (!state.api || !state.session) {
+    el.chatBranch.hidden = true;
+    return;
+  }
+  try {
+    const status = await state.api.vcsStatus({ directory: state.session.location?.directory });
+    const files = Array.isArray(status?.data) ? status.data : [];
+    const branch = await state.api.vcsBranch({ directory: state.session.location?.directory }).catch(() => null);
+    const name = branch?.branch || branch?.name || branch?.data?.branch || "";
+    el.chatBranch.hidden = !name && !files.length;
+    el.chatBranch.textContent = [name, files.length ? files.length + " changed" : ""].filter(Boolean).join(" · ");
+  } catch {
+    el.chatBranch.hidden = true;
+  }
+}
+
 function openChangesSheet() {
   const files = state.diff ?? [];
   openSheet({
@@ -2871,6 +3001,7 @@ function sessionActions(session) {
         <p class="sheet-note">${escapeHtml(session.location?.directory || "")}</p>
         <div class="sheet-list">
           ${sheetRow({ iconName: "edit", title: "Rename", attrs: "data-action=rename" })}
+          ${sheetRow({ iconName: "search", title: "Find in conversation", sub: "Jump to a prompt or answer", attrs: "data-action=find" })}
           ${
             state.diff?.length
               ? sheetRow({ iconName: "diff", title: "Changes", sub: state.diff.length + " files touched here", attrs: "data-action=changes" })
@@ -2881,6 +3012,7 @@ function sessionActions(session) {
           ${sheetRow({ iconName: "refresh", title: "Compact context", sub: "Summarise to free context", attrs: "data-action=compact" })}
           ${sheetRow({ iconName: "terminal", title: "Run a command", sub: "Shell inside this session", attrs: "data-action=shell" })}
           ${sheetRow({ iconName: "book", title: "Load a skill", attrs: "data-action=skills" })}
+          ${sheetRow({ iconName: "download", title: "Export session", sub: "JSON, as the server stores it", attrs: "data-action=export" })}
           ${sheetRow({ iconName: "copy", title: "Copy transcript", sub: "Conversation as Markdown", attrs: "data-action=copy" })}
           ${
             session.time?.archived
@@ -2901,6 +3033,17 @@ function sessionActions(session) {
         if (action === "rename") return renameSession(session);
         if (action === "delete") return deleteSession(session);
         if (action === "info") return sessionInfo(session);
+        if (action === "find") {
+          if (state.session?.id !== session.id) {
+            toast("Open the session to search it");
+            return;
+          }
+          return openFindSheet();
+        }
+        if (action === "export") {
+          closeSheet();
+          return exportSession(session);
+        }
         if (action === "changes") return openChangesSheet();
         if (action === "fork") return forkSession(session);
         if (action === "undo") return openUndoSheet(session);
@@ -3295,6 +3438,7 @@ function openSettings() {
                 </div>`
           }
           ${state.info ? `<div class="setting-row"><div class="setting-text"><div class="setting-title">Version</div><div class="setting-sub">${escapeHtml(serverLabel)}</div></div></div>` : ""}
+          ${sheetSettingRow("download", "Import a session", "From a JSON export", "import-session")}
           ${sheetSettingRow("shield", "Permissions", "Rules that skip the approval sheet", "saved-permissions")}
           ${sheetSettingRow("plug", "MCP servers", "Tools connected to this workspace", "open-mcp")}
           ${sheetSettingRow("cpu", "Providers", "Model providers this server reaches", "open-providers")}
@@ -3335,6 +3479,14 @@ function openSettings() {
         if (e.target.closest("#edit-conn")) {
           closeSheet();
           setTimeout(openConnectionSheet, 220);
+        }
+        if (e.target.closest("#import-session")) {
+          if (state.demo) {
+            toast("Demo mode has no server to import into");
+            return;
+          }
+          importSession();
+          return;
         }
         if (e.target.closest("#open-prefs")) {
           openPrefsStudio();
@@ -3543,6 +3695,7 @@ function bindEvents() {
   el.chatBack.addEventListener("click", () => closeChat(false));
   el.chatTitle.addEventListener("click", () => state.session && renameSession(state.session));
   el.chatMenu.addEventListener("click", () => state.session && sessionActions(state.session));
+  el.chatFind?.addEventListener("click", () => openFindSheet());
   el.chipModel.addEventListener("click", () => openModelSheet());
   el.chipAgent.addEventListener("click", () => openAgentSheet());
   el.permBanner.addEventListener("click", () => showPermissionSheet());
