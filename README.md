@@ -105,20 +105,19 @@ phone
    pkg install -y nodejs git
    git clone https://github.com/shivapal12395-droid/opencode-pocket.git
    cd opencode-pocket
-   chmod +x start.sh
    ```
 
 4. **Start everything** with one command:
 
    ```bash
-   OPENCODE_CMD="oc ~/projects serve --hostname 127.0.0.1 --port 4096" ./start.sh
+   OPENCODE_CMD="oc ~/projects serve --hostname 127.0.0.1 --port 4096" bash start.sh
    ```
 
    `~/projects` is created by the installer — passing it first stops `oc` offering to create
    a project called "serve". `start.sh` boots OpenCode through `oc`, waits for the **server
-   password**, prints it, and opens Chrome at `http://127.0.0.1:8099`. Paste that password
-   into the app (or run `oc pair` in another session and paste the whole link).
-
+   password**, serves the UI, then opens Chrome with the password already in the link, so the
+   app comes up connected and you never type it. See
+   [Opening the app already connected](#opening-the-app-already-connected).
 
 **One-tap start.** Install [Termux:Widget](https://github.com/termux/termux-widget/releases)
 (the GitHub build, to match Termux), then long-press your home screen → **Widgets** →
@@ -148,7 +147,7 @@ oc shell
 cd ~/projects && opencode serve --hostname 127.0.0.1 --port 4096
 
 # session 2: the UI
-cd ~/opencode-pocket && ./start.sh
+cd ~/opencode-pocket && bash start.sh
 ```
 
 The second command notices the server is already up, skips starting it, and just serves the
@@ -266,7 +265,7 @@ Pura kaam phone pe: Termux me Debian ke andar OpenCode, Termux me Pocket UI, scr
 pkg install -y curl nodejs git
 curl -fsSL https://raw.githubusercontent.com/MeanderX/opencode-android/main/get.sh | bash
 git clone https://github.com/shivapal12395-droid/opencode-pocket.git && cd opencode-pocket
-OPENCODE_CMD="oc ~/projects serve --hostname 127.0.0.1 --port 4096" ./start.sh
+OPENCODE_CMD="oc ~/projects serve --hostname 127.0.0.1 --port 4096" bash start.sh
 ```
 
 Terminal ka **server password** (ya `oc pair` ka link) app me paste karo → Chrome me **Add to Home screen**. Bas — TUI ki keyboard dikkat khatam, laptop ki zaroorat nahi.
