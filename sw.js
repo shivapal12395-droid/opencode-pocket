@@ -1,4 +1,4 @@
-const CACHE = "opencode-pocket-v5";
+const CACHE = "opencode-pocket-v6";
 const SHELL = [
   "./",
   "./index.html",
@@ -7,6 +7,9 @@ const SHELL = [
   "./assets/api.js",
   "./assets/markdown.js",
   "./assets/mock.js",
+  "./assets/fonts/inter-latin.woff2",
+  "./assets/fonts/inter-latin-ext.woff2",
+  "./assets/fonts/jetbrains-mono-latin.woff2",
   "./assets/icon.svg",
   "./assets/icon-192.png",
   "./assets/icon-512.png",
@@ -51,25 +54,19 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
+  // Network first, cache as the fallback. The server is on the loopback, so the
+  // network is both fast and authoritative; serving cache-first meant a freshly
+  // pulled version only showed up on the second visit, which looked like the app
+  // ignoring updates. Offline the cached shell still answers.
   event.respondWith(
-    caches.match(req).then((hit) => {
-      if (hit) {
-        fetch(req)
-          .then((res) => {
-            if (res.ok) caches.open(CACHE).then((cache) => cache.put(req, res));
-          })
-          .catch(() => {});
-        return hit;
-      }
-      return fetch(req)
-        .then((res) => {
-          if (res.ok) {
-            const copy = res.clone();
-            caches.open(CACHE).then((cache) => cache.put(req, copy));
-          }
-          return res;
-        })
-        .catch(() => caches.match("./index.html"));
-    })
+    fetch(req)
+      .then((res) => {
+        if (res.ok) {
+          const copy = res.clone();
+          caches.open(CACHE).then((cache) => cache.put(req, copy));
+        }
+        return res;
+      })
+      .catch(() => caches.match(req).then((hit) => hit || caches.match("./index.html")))
   );
 });

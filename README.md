@@ -64,7 +64,7 @@ No phone, no server, no account: **[open the demo](https://shivapal12395-droid.g
 - **PWA** - Add to Home Screen, offline shell, safe-area aware.
 - **Themes** - a dark system theme resolves to true-black AMOLED (`#000`, OLED pixels off); Dark (`#0b0f14`), Light and Auto are one tap away in Settings.
 - **Deep links** — `?base=…&secret=…` opens straight into the session list, no typing.
-- **Zero dependencies** — vanilla HTML, CSS and JS. No bundler, no framework.
+- **Zero dependencies** - vanilla HTML, CSS and JS. No bundler, no framework, no npm install. (The two typefaces are bundled `woff2` files, SIL OFL 1.1, so a phone's system font theme can't restyle the UI.)
 
 ## Setup — everything on the phone
 
