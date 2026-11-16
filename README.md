@@ -27,6 +27,14 @@ No build step. No backend of its own. One static app that talks straight to `ope
 | --- | --- | --- |
 | <img src="docs/mcp.png" width="240" alt="MCP server status" /> | <img src="docs/usage.png" width="240" alt="Token and spend summary" /> | <img src="docs/theme-amoled.png" width="240" alt="True-black AMOLED theme" /> |
 
+| Artifact | Live preview | Preferences |
+| --- | --- | --- |
+| <img src="docs/artifact-code.png" width="240" alt="A generated file opened full screen with line numbers" /> | <img src="docs/artifact-html.png" width="240" alt="A generated page running in a sandboxed preview" /> | <img src="docs/preferences.png" width="240" alt="Preferences: theme, accent, reading mode" /> |
+
+| Activity timeline | Artifacts inline |
+| --- | --- |
+| <img src="docs/chat-activity.png" width="240" alt="A run of tool calls folded into one expandable row" /> | <img src="docs/chat-artifacts.png" width="240" alt="Artifact cards under a finished answer" /> |
+
 | Streaming | Tool call | A failed turn |
 | --- | --- | --- |
 | <img src="docs/chat-streaming.png" width="240" alt="Reply streaming in" /> | <img src="docs/chat-tool.png" width="240" alt="Expanded tool call" /> | <img src="docs/failed-turn.png" width="240" alt="Provider failure with the reason and a next step" /> |
@@ -39,6 +47,11 @@ No phone, no server, no account: **[open the demo](https://shivapal12395-droid.g
 
 ### Chat
 - **Streaming** — text, reasoning and tool calls render live over SSE.
+- **Activity timeline** — a run of tool calls and thoughts folds into one expandable row ("4 steps · read 2 · ran 1"), live while it works. Low / medium / high verbosity.
+- **Message actions** — copy, ask again, copy as Markdown, save `.md`, share, edit-and-resend, and suggested follow-ups when the answer earns them.
+- **Artifacts** — a generated file, page, diagram or long document becomes a card in the transcript that opens full screen: preview and code tabs, line numbers, wrap, copy, save. HTML runs in a sandboxed frame with no access to this app or its password.
+- **Questions from the agent** — the `question` tool arrives as a form with choices, free text, multiselect and conditional fields; answering it unblocks the turn.
+- **Queue or steer** — while a turn runs, the composer picks between joining it and waiting; queued prompts show above the composer and can be cancelled or re-aimed.
 - **Tool cards** — expand any call for its input, output and exit code; a failed tool shows the error, not just a red dot.
 - **Clear failures** — a rejected turn shows the provider's reason, a next step, and how long to wait. Retries appear as they happen.
 - **Rewind** — undo the last turn, restoring the files it changed, then keep or drop it.
@@ -47,6 +60,7 @@ No phone, no server, no account: **[open the demo](https://shivapal12395-droid.g
 
 ### Sessions
 - Grouped by workspace, searchable, rename, delete, archive.
+- Unread and failed-run dots, find-in-conversation, and JSON export/import of a session.
 - **Fork** to branch a conversation, **compact** to summarise context before it fills up.
 - **Changes sheet** — every file the session touched, with additions/deletions and the unified patch.
 - **Run a command** — hand a shell command to the session and read the output in the transcript.
@@ -65,6 +79,19 @@ No phone, no server, no account: **[open the demo](https://shivapal12395-droid.g
 - **Themes** - a dark system theme resolves to true-black AMOLED (`#000`, OLED pixels off); Dark (`#0b0f14`), Light and Auto are one tap away in Settings.
 - **Deep links** — `?base=…&secret=…` opens straight into the session list, no typing.
 - **Zero dependencies** — vanilla HTML, CSS and JS. No bundler, no framework.
+
+## How the chat is put together
+
+Assistant text is the spine of the transcript: prose, tables, lists and code
+render as a document, not as a bubble. Tool work folds into an activity row you
+can open, and anything substantial becomes an artifact card. The composer carries
+the model, the agent, the attachment button and a Steer/Queue switch that only
+appears while something is running.
+
+Preferences are local to this app and are kept apart from OpenCode's own
+`opencode.jsonc`: theme (true black AMOLED by default on a dark system), accent,
+text and code size, comfortable / compact / focus reading modes, reduced motion,
+timestamps, verbosity, line wrap and line numbers.
 
 ## Setup — everything on the phone
 

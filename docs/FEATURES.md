@@ -38,14 +38,14 @@ below is judged by "can I do it from a phone with this UI".
 | Streaming text | SSE deltas, live caret | **yes** |
 | Reasoning / thought process | Collapsible reasoning blocks | **yes** |
 | Tool calls | One row per call, expandable input/output/exit code | **yes** |
-| Activity summary row | TUI/desktop collapse a run of tools+thoughts into one row; verbosity `low`/`medium`/`high` | **part** - every tool stays a separate row, no verbosity setting |
+| Activity summary row | TUI/desktop collapse a run of tools+thoughts into one row; verbosity `low`/`medium`/`high` | **yes** - one row per run, live counter, verbosity in Preferences |
 | Diffs in the timeline | Each edit shows as a diff inline as it lands | **part** - diff chip + changes sheet; no inline diff per edit |
 | Inline line comments | Desktop review panel: comment on any line, sent back to the agent | **no** |
-| Failures | Provider reason, next step, wait time, retries as they happen | **yes** (retry *cards* only) |
+| Failures | Provider reason, next step, wait time, retries as they happen | **yes** - `session.retry.scheduled` and `session.step.failed` render live |
 | Interrupt | Stop a running turn | **yes** |
 | Steer while running | Enter steers the active session | **yes** (sending a prompt mid-run) |
-| Queue a prompt | TUI `Ctrl+X Enter`; server keeps an inbox per session | **no** - `GET/PATCH/DELETE /api/session/{id}/inbox` unused |
-| Agent asks a question | `question` tool → a form with choices; blocks until answered | **no** - `POST /api/session/{id}/form/{formID}/reply` unused, so such a turn stalls |
+| Queue a prompt | TUI `Ctrl+X Enter`; server keeps an inbox per session | **yes** - Steer/Queue chip, queue strip, cancel and re-aim |
+| Agent asks a question | `question` tool → a form with choices; blocks until answered | **yes** - inline card: choices, free text, multiselect, booleans, conditional fields |
 | Attachments | File picker, paste, drag; text/PNG/JPEG/GIF/WebP/PDF up to 20 MiB | **part** - camera/gallery images only, resized client-side |
 | @-mentions | `@path`, with `#20-45` line ranges | **part** - path search yes, line ranges no |
 | Slash commands | Discovered from `.opencode/commands`, `$ARGUMENTS`, `$1..$n`, `!`shell blocks | **yes** |
@@ -66,14 +66,14 @@ below is judged by "can I do it from a phone with this UI".
 | Rename / archive / unarchive / delete | yes | **yes** |
 | Tabs (several sessions at once) | yes (desktop + TUI) | **no** |
 | Recent sessions sidebar, pins, reorder | yes (desktop, experimental) | **no** |
-| Read / unread + inbox badges | yes | **no** |
+| Read / unread + inbox badges | yes | **yes** - unread dot from `time.viewed`, failed-run dot from `outcome` |
 | Inbox (queued prompts, delivered work) | yes | **no** |
 | Failed-run indicator on a tab | yes | **no** (list shows nothing) |
 | Fork a session | yes | **yes** (`POST /api/session/{id}/fork`) |
 | Compact context | yes - also automatic, `keep.tokens`, `buffer`, background mode | **part** - manual only, automatic is server-side |
 | Undo / revert | `/undo` stages a rollback, `/redo` cancels, next prompt commits | **yes** (stage → keep/drop, banner) |
-| Jump to message | Search prompts inside a session, jump | **no** |
-| Export / import | `session export` (JSON, `--sanitize`), `session import` | **no** - `GET /api/experimental/session/{id}/export` unused |
+| Jump to message | Search prompts inside a session, jump | **yes** - search sheet, scroll + highlight |
+| Export / import | `session export` (JSON, `--sanitize`), `session import` | **yes** - export from the session menu, import from Settings |
 | Move a session / worktrees | Move to another directory, create/list/remove worktrees | **part** - `GET /api/worktree` used for display only |
 | Session info / metadata | yes | **yes** (info sheet: model, agent, tokens, cost, archived) |
 | Synthetic messages | Client can inject a note into the transcript | **no** - `POST /api/session/{id}/synthetic` unused |
@@ -115,7 +115,7 @@ below is judged by "can I do it from a phone with this UI".
 | Comment on a diff line | yes (desktop review panel) | **no** |
 | File tree / workspace browser | Desktop sidebar | **part** - `fs/list` + `fs/read` for mentions |
 | Markdown preview with frontmatter | yes | **no** |
-| VCS panel | Branch, base, status, diff, init | **no** - `/api/vcs*` unused |
+| VCS panel | Branch, base, status, diff, init | **part** - branch + dirty count in the chat header; no per-file diff panel |
 | Built-in browser | Agent drives a real browser pane next to the chat | **no** (phone: the system browser) |
 | Terminal pane | Real PTY inside the app | **no** - `/api/pty`, `/api/shell` unused |
 
@@ -149,28 +149,28 @@ below is judged by "can I do it from a phone with this UI".
 
 ## 7. What the server offers that this UI does not touch
 
-The v2.3.0 server exposes **139 REST paths**. Pocket calls **38** of them (~27%).
+The v2.3.0 server exposes **139 REST paths**. Pocket calls **49** of them (~35%).
 
-Used: session CRUD, messages, prompt, command, interrupt, model, agent, view,
-diff, context, fork, compact, revert (stage/commit/clear), shell (in-session),
-skill list + activate, reference, mcp list, provider list, permission get/reply,
-saved permissions list/delete, worktree list, default model, stats, fs find/list/read,
-event stream, info, project.
+Used: session CRUD, messages, prompt (steer and queue), command, interrupt, model,
+agent, view, diff, context, fork, compact, revert (stage/commit/clear), shell
+(in-session), skill list + activate, reference, mcp list, provider list,
+permission get/reply, saved permissions list/delete, worktree list, default
+model, stats, fs find/list/read, event stream, info, project, plus this
+release's additions: **forms (list, reply, cancel), inbox (list, re-aim,
+cancel), session export/import, vcs status/branch**.
 
 Not used, grouped:
 
-- **Blocking a conversation**: `session/{id}/form` + `form/{formID}/reply` (the
-  `question` tool), `session/{id}/inbox` (queued prompts).
-- **Sessions**: `export`, `import`, `synthetic`, `move`, `background`, `active`,
-  `message/{id}`, `experimental/session/{id}/wait`, `…/log`.
-- **Workspace**: `vcs`, `vcs/base`, `vcs/branch`, `vcs/diff`, `vcs/status`,
-  `vcs/init`, `config`, `config/shell`, `experimental/config`, `location`,
-  `location/reload`, `project/{id}` (patch), `experimental/fs/write`, `…/fs/watch`.
+- **Sessions**: `synthetic`, `move`, `background`, `active`, `message/{id}`,
+  `experimental/session/{id}/wait`, `.../log`.
+- **Workspace**: `vcs` (full), `vcs/base`, `vcs/diff`, `vcs/init`, `config`,
+  `config/shell`, `experimental/config`, `location`, `location/reload`,
+  `project/{id}` (patch), `experimental/fs/write`, `.../fs/watch`.
 - **Execution surfaces**: `pty*`, `shell*`, `experimental/session/{id}/terminal`,
   `experimental/persistent-pty*`.
 - **Extensibility**: `plugin`, `plugin/gui`, `plugin/check`, `plugin/update`,
   `rpc/{id}/{method}`, `integration*`, `credential*`, `experimental/mcp/{server}`
-  (PUT/DELETE), `…/mcp/{server}/connect|disconnect`, `mcp/resource`,
+  (PUT/DELETE), `.../mcp/{server}/connect|disconnect`, `mcp/resource`,
   `experimental/client-mcp`.
 - **Generation / media**: `experimental/generate`, `/image`, `/text`,
   `/decisions`, `experimental/artifacts*`, `experimental/media/{hash}`.
@@ -178,51 +178,46 @@ Not used, grouped:
   `websearch/provider`, `experimental/voice/*`, `experimental/schedule*`,
   `experimental/migration/v1`, `pair`, `auth/connect/{code}`, `debug/*`.
 
----
-
 ## 8. Event coverage
 
-Pocket handles these SSE types: `server.connected`, `session.created|deleted|renamed|
-archived|unarchived|moved|metadata.updated`, `session.model.selected|agent.selected`,
+Handled: `server.connected`, session lifecycle (`created|deleted|renamed|
+archived|unarchived|moved|metadata.updated`), `session.model.selected|agent.selected`,
 `session.execution.started|succeeded|failed|interrupted`, `session.idle`,
-`session.step.started`, `session.text.started|delta|ended`,
-`session.reasoning.started|delta|ended`, `session.tool.input.started|called|success|failed`,
-`session.usage.updated`, `session.revert.staged|cleared|committed`, `session.shell.ended`,
-`session.compaction.started`, `session.inbox.delivered`, `permission.asked`.
+`session.step.started|ended|failed`, `session.retry.scheduled`,
+`session.text.started|delta|ended`, `session.reasoning.started|delta|ended`,
+`session.tool.input.started|called|success|failed`, `session.usage.updated`,
+`session.revert.staged|cleared|committed`, `session.shell.ended`,
+`session.compaction.started`, `permission.asked`,
+`form.created|replied|cancelled`, and every `session.inbox.*` event
+(`enqueued`, `updated`, `delivered`, `cancelled`) which refreshes the queue strip.
 
-Still unhandled, in rough order of user impact:
+Still unhandled:
 
-1. `session.form.asked` / form replies - a question from the agent is invisible.
-2. `session.step.failed` - a failed step is only noticed at `execution.failed`.
-3. Retry events - retries are inferred from message state, not streamed.
-4. `session.instructions.updated` - instruction changes never refresh.
-5. Inbox delivery/queue events beyond the single `delivered` case.
-
----
+1. `session.instructions.updated` - instruction changes never refresh.
+2. `session.todo.updated` - the checklist only appears inside a tool card.
+3. Provider/agent catalog changes while the app is open.
 
 ## 9. Suggested order of work
 
-**P0 - breaks a turn**
-1. Forms / `question` tool: render the form, reply with a choice or free text.
-2. Inbox: queue a prompt while the session runs, show and cancel queued items.
+**Landed in this release** (see the git log): forms, inbox/queue and delivery
+semantics, activity timeline with verbosity, message actions, artifacts (code,
+HTML, document, diagram, diff), the preferences studio, find-in-conversation,
+unread and failed-run dots, session export/import, branch chip, retry and
+step-failed events, and the markdown engine rewrite.
 
 **P1 - daily use on a phone**
-3. Provider login (`/api/integration*`, `/api/credential*`) instead of dropping to a terminal.
-4. Export / import a session.
-5. VCS strip in the chat header: branch, dirty count, `/api/vcs/status`.
-6. MCP: connect/disconnect a server, sign in, list resources.
-7. Retry / step-failed events so the transcript never lies about progress.
+
+1. Provider login (`/api/integration*`, `/api/credential*`) instead of dropping to a terminal.
+2. MCP: connect/disconnect a server, sign in, list resources.
+3. A tab switcher for parallel sessions (the server already supports it).
 
 **P2 - parity polish**
-8. Tabs or a session switcher with unread/failed badges.
-9. Jump-to-message search within a session.
-10. Todo checklist rendering + activity summary row with verbosity.
-11. Terminal pane (PTY) and background shells.
-12. Config sheet (default model, permissions editor, instructions view).
-13. GUI plugin panels, artifacts, image generation previews.
-14. Native app shell: foreground service + boot receiver (see README).
 
----
+4. Todo checklist rendering (`session.todo.updated`).
+5. Terminal pane (PTY) and background shells.
+6. Config sheet (default model, permissions editor, instructions view).
+7. GUI plugin panels, image-generation previews.
+8. Native app shell: foreground service + boot receiver (see README).
 
 ## Sources
 

@@ -1169,3 +1169,18 @@ button.setting-row { width: 100%; text-align: left; background: none; border: 0;
 .find-hit { align-items: flex-start; }
 .find-hit .si-sub { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .find-time { font-size: 10.5px; color: var(--muted-2); flex: 0 0 auto; margin-left: 8px; }
+
+
+/* ---- long conversations -------------------------------------------------
+   A 1,000-message session should scroll like a 20-message one. The browser can
+   skip layout and paint for anything off screen; the intrinsic size keeps the
+   scrollbar honest until it does. */
+.msg {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 120px;
+}
+.msg:has(.stream-caret),
+.msg:has(.tool-card.open),
+.msg:has(.activity.open) {
+  content-visibility: visible;
+}

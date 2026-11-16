@@ -1055,8 +1055,8 @@ function transcriptSignature() {
           p.time?.completed ? "c" : ""
         );
       }
-      if (m.error) bits.push("err");
-      if (m.retry) bits.push("retry" + (m.retry.attempt ?? ""));
+      if (m.error) bits.push("err" + (m.error.message ?? "").length);
+      if (m.retry) bits.push("retry" + (m.retry.attempt ?? "") + (m.retry.error?.message ?? "").length);
       bits.push(String(m.tokens?.input ?? ""), String(m.cost ?? ""));
     } else if (m.type === "idle") {
       bits.push(m.outcome ?? "");
@@ -1441,6 +1441,28 @@ function handleEvent(event) {
       state.lastAssistantId = null;
       scheduleMessageRefresh(250);
       break;
+    case "session.retry.scheduled": {
+      // The provider hiccuped and the server is waiting to try again. Showing it
+      // prevents a silent pause that looks like a hang.
+      const m = ensureAssistant(data.assistantMessageID, data);
+      m.retry = { attempt: data.attempt ?? 1, error: data.error };
+      setBusy(true);
+      renderMessages();
+      break;
+    }
+    case "session.step.failed": {
+      const m = ensureAssistant(data.assistantMessageID, data);
+      m.retry = undefined;
+      m.error = data.error ?? m.error ?? { message: "The step failed" };
+      setBusy(false);
+      renderMessages();
+      break;
+    }
+    case "session.step.ended": {
+      const m = state.messages.find((x) => x.id === data.assistantMessageID);
+      if (m) m.finish = data.finish;
+      break;
+    }
     case "session.step.started": {
       state.lastAssistantId = data.assistantMessageID;
       ensureAssistant(data.assistantMessageID, { ...data, started: data.started });
