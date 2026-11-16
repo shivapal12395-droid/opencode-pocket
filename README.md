@@ -62,6 +62,7 @@ No phone, no server, no account: **[open the demo](https://shivapal12395-droid.g
 ### Server view
 - **MCP servers** with live status, **providers** and their activation, **workspace files**.
 - **PWA** — Add to Home Screen, offline shell, dark / light / system, safe-area aware.
+- **Deep links** — `?base=…&secret=…` opens straight into the session list, no typing.
 - **Zero dependencies** — vanilla HTML, CSS and JS. No bundler, no framework.
 
 ## Setup — everything on the phone
@@ -118,6 +119,25 @@ phone
    password**, prints it, and opens Chrome at `http://127.0.0.1:8099`. Paste that password
    into the app (or run `oc pair` in another session and paste the whole link).
 
+
+**One-tap start.** Install [Termux:Widget](https://github.com/termux/termux-widget/releases)
+(the GitHub build, to match Termux), then long-press your home screen → **Widgets** →
+**Termux:Widget** → drag **Pocket** out. That shortcut runs `pocket`, which boots OpenCode,
+serves the UI and opens the browser already connected.
+
+`pocket` also works from a terminal session, and takes a project directory:
+`POCKET_PROJECT=~/projects/my-app pocket`.
+
+**Keeping it alive.** Android's phantom-process killer and battery optimisation both enjoy
+killing a proot server mid-turn. Once, over USB debugging:
+
+```bash
+adb shell settings put global settings_enable_monitor_phantom_procs false
+adb shell cmd deviceidle whitelist +com.termux
+```
+
+Then set Termux to **Unrestricted** in the app's battery settings.
+
 5. **Add to Home screen:** Chrome menu → **Add to Home screen**. One tap from then on.
 
 **If the one-liner misbehaves — two terminals, same phone-only result:**
@@ -142,6 +162,19 @@ on every server restart — paste the new one, or use a fresh `oc pair` link.
 >
 > **Security:** `opencode serve` exposes a shell. Here it is bound to `127.0.0.1`, reachable
 > only from apps on the phone. Never bind it to `0.0.0.0` on public Wi-Fi or forward it.
+
+### Opening the app already connected
+
+The server password is 43 characters, which is miserable to type on a phone. `start.sh`
+therefore hands the browser a pre-filled link:
+
+```
+http://127.0.0.1:8099/?base=http://127.0.0.1:4096&secret=<server password>
+```
+
+The app connects, then strips the query with `history.replaceState` before the first paint,
+so the password does not linger in the address bar. Any shortcut or QR code can use the same
+form — handy for a home-screen shortcut that skips the connect screen entirely.
 
 ### Optional: keep the agent on a second machine
 
