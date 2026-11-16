@@ -64,89 +64,102 @@ No phone, no server, no account: **[open the demo](https://shivapal12395-droid.g
 - **PWA** — Add to Home Screen, offline shell, dark / light / system, safe-area aware.
 - **Zero dependencies** — vanilla HTML, CSS and JS. No bundler, no framework.
 
-## Quick start: one command on a laptop
+## Setup — everything on the phone
 
-```bash
-git clone https://github.com/shivapal12395-droid/opencode-pocket.git
-cd opencode-pocket
-chmod +x start.sh
-./start.sh
+The whole stack lives on your device. Debian runs OpenCode, Termux runs the Pocket UI,
+and Chrome (or the installed PWA) is the screen. **No laptop, no cloud, no port forwarding**,
+and no internet beyond the model calls you choose to make.
+
+```
+phone
+  Chrome / installed PWA   http://127.0.0.1:8099   <- Pocket (Node in Termux)
+             |
+             |  fetch /api/*, same loopback
+             v
+  opencode serve           http://127.0.0.1:4096   <- OpenCode 2 (Debian inside proot)
 ```
 
-`start.sh` starts `opencode serve` if it isn't already running, prints the **server password**, serves the UI on `http://127.0.0.1:8099`, and opens your browser.
+> **Why the Debian layer?** OpenCode 2 is published for Linux/macOS/Windows only. In plain
+> Termux its launcher misdetects Android-arm64 and downloads the Linux-x64 binary, so it
+> fails to start. Running it inside `proot-distro` is the working on-device route.
 
-## Quick start: Android / Termux (on-device)
+1. **Install Termux** from [F-Droid](https://f-droid.org/en/packages/com.termux/) or the
+   [GitHub releases](https://github.com/termux/termux-app/releases). The Play Store build is
+   outdated and will not work. Keep ~2 GB free.
 
-> **Important:** OpenCode 2 does **not** install in plain Termux — the launcher picks the Linux-x64 binary for an arm64 phone. Use a Linux environment. The steps below use [@MeanderX/opencode-android](https://github.com/MeanderX/opencode-android), which installs OpenCode 2 inside Debian via `proot-distro` and gives you an `oc` launcher.
-
-1. Install **Termux** from [F-Droid](https://f-droid.org/en/packages/com.termux/) or the [GitHub releases](https://github.com/termux/termux-app/releases) — the Play Store build is outdated.
-
-2. Install OpenCode for Termux (one line — it sets up Debian, Node 22 and OpenCode; needs ~2 GB free):
+2. **Install OpenCode inside Debian** — one line sets up proot-distro, Node 22 and OpenCode 2:
 
    ```bash
    pkg install -y curl
    curl -fsSL https://raw.githubusercontent.com/MeanderX/opencode-android/main/get.sh | bash
    ```
 
-   Approve the storage-permission dialog when it appears. Sign in to a model provider the first time with `oc auth login` (or later from inside OpenCode).
+   Approve the storage-permission dialog. On first use, sign in to a model provider with
+   `oc auth login` (or later from inside OpenCode).
 
-3. Install and start Pocket:
+3. **Install Pocket.** Note the `nodejs` package — the UI's tiny static server runs in Termux,
+   not inside Debian:
 
    ```bash
-   pkg install -y git
+   pkg install -y nodejs git
    git clone https://github.com/shivapal12395-droid/opencode-pocket.git
    cd opencode-pocket
    chmod +x start.sh
+   ```
+
+4. **Start everything** with one command:
+
+   ```bash
    OPENCODE_CMD="oc ~/projects serve --hostname 127.0.0.1 --port 4096" ./start.sh
    ```
 
    `~/projects` is created by the installer — passing it first stops `oc` offering to create
-   a project called "serve" instead of running the command. `start.sh` boots the server
-   through `oc`, waits for the **server password**, prints it, and opens Chrome at
-   `http://127.0.0.1:8099`. Paste that password into the app (or run `oc pair` in another
-   Termux session and paste the whole link).
+   a project called "serve". `start.sh` boots OpenCode through `oc`, waits for the **server
+   password**, prints it, and opens Chrome at `http://127.0.0.1:8099`. Paste that password
+   into the app (or run `oc pair` in another session and paste the whole link).
 
-4. In Chrome: menu → **Add to Home screen**. From then on, one tap opens Pocket.
+5. **Add to Home screen:** Chrome menu → **Add to Home screen**. One tap from then on.
 
-**Two-terminal variant (if the one-liner misbehaves):** terminal 1 → `oc shell`, then
-`cd ~/projects && opencode serve --hostname 127.0.0.1 --port 4096`; terminal 2 →
-`cd ~/opencode-pocket && ./start.sh`. Pocket detects the running server and just
-serves the UI. Get the password from the server terminal or run `oc pair`.
-
-> **Android battery:** long sessions can be killed by the phantom-process killer. Disable battery optimisation for Termux, or run `termux-wake-lock` before starting to keep the CPU awake.
-
-## If you already run OpenCode on a laptop
-
-Keep the server there and use the phone only as a client:
+**If the one-liner misbehaves — two terminals, same phone-only result:**
 
 ```bash
-# on the laptop
-opencode serve --hostname 0.0.0.0 --port 4096 --cors http://192.168.1.20:8099
+# session 1: the agent
+oc shell
+cd ~/projects && opencode serve --hostname 127.0.0.1 --port 4096
+
+# session 2: the UI
+cd ~/opencode-pocket && ./start.sh
+```
+
+The second command notices the server is already up, skips starting it, and just serves the
+UI. Grab the password from session 1, or run `oc pair`.
+
+**Every later launch** is just step 4 again (or the two sessions above). The password changes
+on every server restart — paste the new one, or use a fresh `oc pair` link.
+
+> **Android battery:** the phantom-process killer can end a long session. Disable battery
+> optimisation for Termux, or run `termux-wake-lock` before starting.
+>
+> **Security:** `opencode serve` exposes a shell. Here it is bound to `127.0.0.1`, reachable
+> only from apps on the phone. Never bind it to `0.0.0.0` on public Wi-Fi or forward it.
+
+### Optional: keep the agent on a second machine
+
+Only if you *want* to — the phone-only path above is the default. With the server on a laptop
+on the same Wi-Fi, the phone still runs only the UI:
+
+```bash
+# laptop
+opencode serve --hostname 0.0.0.0 --port 4096 --cors http://127.0.0.1:8099
 opencode pair --url http://192.168.1.20:4096
 
-# on the phone
-cd opencode-pocket && ./start.sh
+# phone — serve just the UI, do not start a local agent
+cd ~/opencode-pocket && node server.mjs --port 8099
 ```
 
-Open `http://192.168.1.20:8099` on the phone and paste the pairing link. Replace `192.168.1.20` with the laptop's LAN IP.
-
-### Connect screen
-
-1. **Server URL** — `http://127.0.0.1:4096` (on-device) or `http://<laptop-ip>:4096`
-2. **Password** — the `server password ...` line, or a link from `opencode pair` / `oc pair`
-3. Tap **Connect**, then Chrome → **Add to Home screen**.
-
-### Manual start (no launcher)
-
-```bash
-# terminal 1 — inside the Linux environment
-opencode serve --hostname 127.0.0.1 --port 4096
-
-# terminal 2 — in Termux
-node server.mjs --port 8099
-```
-
-> **Security:** `opencode serve` exposes a shell on your machine. Only bind to `0.0.0.0` on a network you trust, never on public Wi-Fi, and never port-forward it to the internet. The password rotates every time the server restarts.
+In the app set **Server URL** to `http://192.168.1.20:4096` and paste the pairing link.
+Replace the IP with the laptop's LAN address. On the phone-only path the Server URL stays
+`http://127.0.0.1:4096` — you only change it for this optional setup.
 
 ## What it talks to
 
