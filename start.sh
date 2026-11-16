@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# OpenCode Pocket â€” one-command launcher for Termux.
+# OpenCode Pocket Ã¢â‚¬â€ one-command launcher for Termux.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -15,10 +15,10 @@ echo "  OpenCode Pocket"
 echo "  ---------------"
 
 if node -e "fetch('${API}/api/info').then(()=>process.exit(0)).catch(()=>process.exit(1))" >/dev/null 2>&1; then
-  echo "  âœ“ OpenCode server already running on ${API}"
+  echo "  Ã¢Å“â€œ OpenCode server already running on ${API}"
   echo "  Password: copy it from the terminal running the server, or run 'opencode pair'."
 else
-  echo "  â†’ starting opencode serve on ${API}"
+  echo "  Ã¢â€ â€™ starting opencode serve on ${API}"
   # On Android, OpenCode 2 needs a Linux environment (proot-distro). Set
   # OPENCODE_CMD to the launcher that starts it, e.g.:
   #   OPENCODE_CMD="oc serve --hostname 127.0.0.1 --port 4096" ./start.sh
@@ -40,7 +40,7 @@ else
   if [ -n "${PW}" ]; then
     echo ""
     echo "  Server password: ${PW}"
-    echo "  (or run: opencode pair  â€” then paste the whole link)"
+    echo "  (or run: opencode pair  Ã¢â‚¬â€ then paste the whole link)"
   else
     echo "  Could not read the password yet."
     echo "  Check ${LOG}, or run 'opencode pair' in the server terminal."
@@ -49,15 +49,25 @@ fi
 
 # Hand the browser an already-connected link when we know the password, so the
 # 43-character secret never has to be typed on a phone keyboard. `:` and `/` are
-# legal in a query string; only the characters that would break parsing are escaped.
+# legal in a query string; only characters that would break parsing are escaped.
 OPEN_URL="http://127.0.0.1:${PORT}/"
 if [ -n "${PW:-}" ]; then
   ESCAPED="$(printf '%s' "${PW}" | sed 's/+/%2B/g; s/=/%3D/g; s/&/%26/g; s/#/%23/g')"
   OPEN_URL="${OPEN_URL}?base=${API}&secret=${ESCAPED}"
 fi
 
-echo "  â†’ UI: http://127.0.0.1:${PORT}"
+echo "  → UI: http://127.0.0.1:${PORT}"
 echo ""
+
+# Tapping the home-screen shortcut twice is normal: bring the UI back instead of
+# dying on EADDRINUSE.
+if node -e "fetch('http://127.0.0.1:${PORT}/').then(()=>process.exit(0)).catch(()=>process.exit(1))" >/dev/null 2>&1; then
+  echo "  ✓ Pocket UI already running"
+  if command -v termux-open-url >/dev/null 2>&1; then
+    termux-open-url "${OPEN_URL}" >/dev/null 2>&1 || true
+  fi
+  exit 0
+fi
 
 if command -v termux-open-url >/dev/null 2>&1; then
   (sleep 1.5; termux-open-url "${OPEN_URL}" >/dev/null 2>&1 || true) &
