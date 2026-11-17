@@ -285,10 +285,10 @@ function bindSidebar() {
     if (action === "images") return openImagesSheet();
     if (action === "customize") return openCustomizeSheet();
     if (action === "worktrees") return openWorktreesSheet();
-    if (action === "projects") return openSettings();
+    if (action === "projects") return openProjectsSheet();
     if (action === "tasks") return openSchedulesSheet();
     if (action === "plugins") return openPluginsSheet();
-    if (action === "library") return openInstructionsSheet();
+    if (action === "library") return openLibrarySheet();
     if (action === "explore") return openFindSheet();
   });
 }
@@ -3246,22 +3246,112 @@ function openImagesSheet() {
     kind: "images",
     title: "Images",
     body: (root) => {
-      const images = (state.artifacts ?? []).filter((a) => a.kind === "html" || a.language === "html");
-      root.innerHTML = images.length
-        ? `<div class="image-grid">${images.map((a) => `<button class="image-thumb" data-art-open="${escapeHtml(a.id)}">${icon("image")}<span>${escapeHtml(a.title || "Image")}</span></button>`).join("")}</div>`
-        : `<p class="sheet-note">No images in this project yet. Attach an image in the composer or ask the agent to generate one where your provider supports it.</p>
+      if (!state.session) {
+        root.innerHTML = `<p class="sheet-note">Start a session first — photos you attach live in the messages that carried them.</p>`;
+        return;
+      }
+      // Photos you attached, straight from the transcript. Generated pages and
+      // diagrams are artifacts, and they live in Library.
+      const shots = [];
+      for (const m of state.messages ?? []) {
+        if (m.type !== "user") continue;
+        for (const f of m.files ?? []) {
+          const src = fileSrc(f);
+          if (!src) continue;
+          if (f.mime && !/^image\//.test(f.mime) && !src.startsWith("data:image")) continue;
+          shots.push({ src, name: f.name || "Image" });
+        }
+      }
+      root.innerHTML = shots.length
+        ? `<div class="image-grid">${shots
+            .map(
+              (s) =>
+                `<a class="image-thumb" href="${escapeHtml(s.src)}" target="_blank" rel="noopener">${icon("image")}<span>${escapeHtml(s.name)}</span></a>`
+            )
+            .join("")}</div>`
+        : `<p class="sheet-note">No images in this conversation yet. Attach one from the composer; generated pages and diagrams appear in Library.</p>
            <div class="prefs-foot"><button class="btn btn-ghost" id="image-attach">Attach an image</button></div>`;
       root.addEventListener("click", (e) => {
-        const a = e.target.closest("[data-art-open]");
-        if (a) {
-          const art = state.artifacts.find((x) => x.id === a.dataset.artOpen);
-          if (art) { closeSheet(); openArtifact(art); }
-          return;
-        }
         if (e.target.closest("#image-attach")) {
           closeSheet();
           $("#btn-attach")?.click();
         }
+      });
+    },
+  });
+}
+
+/** Every artifact this conversation produced: pages, diagrams, diffs, code, docs. */
+function openLibrarySheet() {
+  if (!state.session) return needsSession("Library", "artifacts belong to the conversation that produced them.");
+  openSheet({
+    kind: "library",
+    title: "Library",
+    body: (root) => {
+      const items = state.artifacts ?? [];
+      if (!items.length) {
+        root.innerHTML = `<p class="sheet-note">Nothing in the library yet. When the agent writes a file, a page, a diagram or a long document, it lands here as well as in the transcript.</p>`;
+        return;
+      }
+      const iconFor = { html: "image", diagram: "image", diff: "diff", code: "code", doc: "book" };
+      root.innerHTML = `<div class="sheet-list">${items
+        .map(
+          (a) => `<button class="sheet-item" data-lib-open="${escapeHtml(a.id)}">
+            <span class="si-icon">${icon(iconFor[a.kind] ?? "file")}</span>
+            <span class="si-text"><span class="si-title">${escapeHtml(a.title || a.kind)}</span>
+            <span class="si-sub">${escapeHtml(a.kind)}${a.language ? " · " + escapeHtml(a.language) : ""}${a.lines ? " · " + a.lines + " lines" : ""}</span></span>
+          </button>`
+        )
+        .join("")}</div>`;
+      root.addEventListener("click", (e) => {
+        const b = e.target.closest("[data-lib-open]");
+        if (!b) return;
+        const art = (state.artifacts ?? []).find((x) => x.id === b.dataset.libOpen);
+        if (art) {
+          closeSheet();
+          openArtifact(art);
+        }
+      });
+    },
+  });
+}
+
+/** Projects the server knows about, with a way into each one. */
+async function openProjectsSheet() {
+  openSheet({
+    kind: "projects",
+    title: "Projects",
+    body: async (root) => {
+      root.innerHTML = '<p class="sheet-note">Loading projects...</p>';
+      let list = [];
+      try {
+        list = await ensureProjects();
+      } catch (err) {
+        root.innerHTML = `<p class="sheet-note">${escapeHtml(err.message || "Could not load projects")}</p>`;
+        return;
+      }
+      list = [...list].sort((a, b) => (b.time?.active ?? 0) - (a.time?.active ?? 0));
+      if (!list.length) {
+        root.innerHTML = '<p class="sheet-note">No projects yet. A project appears here once a session runs in one of its workspaces.</p>';
+        return;
+      }
+      const count = (dir) => (state.sessions ?? []).filter((s) => s.location?.directory === dir).length;
+      root.innerHTML = `<div class="sheet-list">${list
+        .map(
+          (p) => `<button class="sheet-item" data-project="${escapeHtml(p.canonical ?? "")}">
+            <span class="si-icon">${icon("folder")}</span>
+            <span class="si-text"><span class="si-title">${escapeHtml(basename(p.canonical ?? "") || "project")}</span>
+            <span class="si-sub">${escapeHtml(p.canonical ?? "")} · ${count(p.canonical)} chats</span></span>
+          </button>`
+        )
+        .join("")}</div>`;
+      root.addEventListener("click", (e) => {
+        const b = e.target.closest("[data-project]");
+        if (!b || !b.dataset.project) return;
+        // Open the new-session sheet pointed at this workspace.
+        store.set("lastDir", b.dataset.project);
+        closeSheet();
+        setTimeout(() => openNewSession(), 220);
       });
     },
   });
@@ -3272,17 +3362,49 @@ async function openWorktreesSheet() {
     kind: "worktrees",
     title: "Worktrees",
     body: async (root) => {
+      // Worktrees are per project. The open session names one; otherwise use the
+      // most recently active project instead of sending `projectID=undefined`.
+      let projectID = state.session?.projectID ?? null;
+      let projectDir = state.session?.location?.directory ?? "";
+      if (!projectID) {
+        try {
+          const projects = [...(await ensureProjects())].sort((a, b) => (b.time?.active ?? 0) - (a.time?.active ?? 0));
+          projectID = projects[0]?.id ?? null;
+          projectDir = projects[0]?.canonical ?? projectDir;
+        } catch (_) {
+          /* the empty state below is the honest answer */
+        }
+      }
+      if (!projectID) {
+        root.innerHTML = '<p class="sheet-note">No project yet. Worktrees belong to a project, so start a session in a workspace first.</p>';
+        return;
+      }
       root.innerHTML = '<p class="sheet-note">Loading worktrees…</p>';
       try {
-        const res = await state.api.worktrees(state.session?.projectID);
-        const list = res?.data ?? res ?? [];
+        const list = await state.api.worktrees(projectID);
         root.innerHTML = list.length
-          ? '<div class="sheet-list">' + list.map((w) => `<div class="sheet-item">
-              <span class="si-icon">${icon("branch")}</span>
-              <span class="si-text"><span class="si-title">${escapeHtml(w.name || w.branch || "worktree")}</span>
-              <span class="si-sub">${escapeHtml(w.branch || "")}${w.dirty ? " · changes" : ""}</span></span>
-            </div>`).join("") + "</div>"
-          : '<p class="sheet-note">No worktrees for this project.</p>';
+          ? `<p class="sheet-note">${escapeHtml(projectDir || "project")}</p><div class="sheet-list">` +
+            list
+              .map((w) => {
+                const dir = w.path ?? w.directory ?? "";
+                const name = w.name || basename(dir) || w.branch || "worktree";
+                return `<button class="sheet-item" data-wt-open="${escapeHtml(dir)}"${dir ? "" : " disabled"}>
+                <span class="si-icon">${icon("branch")}</span>
+                <span class="si-text"><span class="si-title">${escapeHtml(name)}</span>
+                <span class="si-sub">${escapeHtml(w.branch || dir || "")}${w.dirty ? " · uncommitted changes" : ""}</span></span>
+              </button>`;
+              })
+              .join("") +
+            "</div>"
+          : `<p class="sheet-note">No worktrees for ${escapeHtml(basename(projectDir) || "this project")} yet.</p>`;
+        root.addEventListener("click", (e) => {
+          const b = e.target.closest("[data-wt-open]");
+          if (!b || !b.dataset.wtOpen) return;
+          // A worktree is a workspace: open the new-session sheet pointed at it.
+          store.set("lastDir", b.dataset.wtOpen);
+          closeSheet();
+          setTimeout(() => openNewSession(), 220);
+        });
       } catch (err) {
         root.innerHTML = `<p class="sheet-note">${escapeHtml(err.message || "Could not load worktrees")}</p>`;
       }
@@ -3330,10 +3452,14 @@ async function openSchedulesSheet() {
     kind: "schedules",
     title: "Scheduled tasks",
     body: async (root) => {
+      if (!state.session) {
+        root.innerHTML = '<p class="sheet-note">Scheduled tasks run inside a session. Open one first, then schedule a prompt against it.</p>';
+        return;
+      }
       root.innerHTML = '<p class="sheet-note">Loading schedules…</p>';
       let list = [];
       try {
-        const res = await state.api.schedules(state.session?.id);
+        const res = await state.api.schedules(state.session.id);
         list = res?.data ?? res ?? [];
       } catch (err) {
         root.innerHTML = `<p class="sheet-note">${escapeHtml(err.message || "Could not load schedules")}</p>`;
@@ -3438,20 +3564,27 @@ async function openInstructionsSheet() {
 async function openPluginsSheet() {
   openSheet({
     kind: "plugins",
-    title: "GUI plugins",
+    title: "Plugins",
     body: async (root) => {
       root.innerHTML = '<p class="sheet-note">Loading plugins…</p>';
       try {
-        const res = await state.api.guiPlugins();
+        const res = await state.api.plugins();
         const list = res?.data ?? res ?? [];
         root.innerHTML = list.length
-          ? '<div class="sheet-list">' + list.map((p) => `<div class="sheet-item"><span class="si-text">
-              <span class="si-title">${escapeHtml(p.name || p.id)}</span>
-              <span class="si-sub">${p.enabled === false ? "disabled" : "enabled"} · ${escapeHtml(p.id)}</span></span></div>`).join("") + "</div>"
-          : '<p class="sheet-note">This server exposes no GUI plugins.</p>';
+          ? `<div class="sheet-list">` + list.map((p) => `<div class="sheet-item"><span class="si-icon">${icon("plug")}</span><span class="si-text">
+              <span class="si-title">${escapeHtml(p.id)}</span>
+              <span class="si-sub">${escapeHtml(p.source?.type ?? "plugin")}${p.state?.status ? " · " + escapeHtml(String(p.state.status)) : ""}</span></span></div>`).join("") + `</div>`
+          : '<p class="sheet-note">This server reports no plugins.</p>';
       } catch (err) {
         root.innerHTML = `<p class="sheet-note">${escapeHtml(err.message || "Could not load plugins")}</p>`;
       }
+
+      root.insertAdjacentHTML("beforeend", '<div class="prefs-foot"><button class="btn btn-ghost" id="plugins-mcp">MCP servers</button></div>');
+      root.addEventListener("click", (e) => {
+        if (!e.target.closest("#plugins-mcp")) return;
+        closeSheet();
+        setTimeout(() => openMcpSheet(), 200);
+      });
     },
   });
 }

@@ -212,6 +212,37 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     return out.map((r) => r.key + ":" + r.title).join(", ");
   });
 
+  await test("Library lists the artifacts of the open conversation", async () => {
+    // The sidebar's Library row used to open Instructions, which is a different
+    // thing entirely. It now lists what the conversation actually produced.
+    await page.evaluate(() => document.querySelector("#sheet-close")?.click());
+    await sleep(300);
+    await page.evaluate(() => document.querySelector("#chat-back")?.click());
+    await sleep(400);
+    await page.click('.session-row [data-open="ses_demo7"]');
+    await page.waitForSelector(".msg", { timeout: 8000 });
+    await sleep(600);
+    await page.evaluate(async () => {
+      document.querySelector("#chat-sidebar")?.click();
+      await new Promise((r) => setTimeout(r, 450));
+      document.querySelector('[data-side="library"]')?.click();
+    });
+    await sleep(900);
+    const info = await page.evaluate(() => ({
+      title: document.querySelector("#sheet-title")?.textContent?.trim() ?? "",
+      rows: [...document.querySelectorAll("#sheet-body [data-lib-open]")].map((n) => n.innerText.split("\n")[0].trim()),
+    }));
+    assert(info.title === "Library", "title=" + info.title);
+    assert(info.rows.length > 0, "no artifacts listed");
+    await page.evaluate(() => document.querySelector("#sheet-body [data-lib-open]")?.click());
+    await sleep(700);
+    const opened = await page.evaluate(() => !document.querySelector("#artifact")?.hidden);
+    assert(opened, "tapping an artifact did not open it");
+    await page.evaluate(() => document.querySelector("#artifact-close")?.click() ?? document.querySelector("#artifact-back")?.click());
+    await sleep(400);
+    return `${info.rows.length} artifacts: ${info.rows.slice(0, 2).join(", ")}`;
+  });
+
   console.log("\n================ FEATURE TEST REPORT 8 ================");
   let pass = 0, fail = 0;
   for (const r of report) { console.log(`${r.status === "PASS" ? "PASS" : "FAIL"}  ${r.name.padEnd(36)} ${r.detail}`); r.status === "PASS" ? pass++ : fail++; }

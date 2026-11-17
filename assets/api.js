@@ -532,8 +532,9 @@ export class Api {
     return this.request("GET", `/api/experimental/session/${encodeURIComponent(sessionID)}/instructions/entries`);
   }
 
-  guiPlugins() {
-    return this.request("GET", "/api/plugin/gui");
+  /** Plugins the server loaded. `/api/plugin/gui` is per plugin, not a list. */
+  plugins() {
+    return this.request("GET", "/api/plugin");
   }
 
   mcpRemove(server) {

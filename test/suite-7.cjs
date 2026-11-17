@@ -67,7 +67,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     await sleep(450);
     await page.click("#chat-sidebar");
     await sleep(450);
-    await page.click('[data-side="library"]');
+    // Instructions live under Customize now; the Library row lists artifacts.
+    await page.click('[data-side="customize"]');
+    await sleep(400);
+    await page.click('[data-cust="instructions"]');
     await page.waitForSelector(".instr-card", { timeout: 8000 });
     const n = await page.$$eval(".instr-card", (x) => x.length);
     assert(n >= 1, "cards=" + n);

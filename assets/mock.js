@@ -924,8 +924,14 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
     return { data: [{ key: "AGENTS.md", source: "project", tokens: 240, content: "# Agent instructions\n\nBe concise and verify changes." }] };
   }
 
-  async guiPlugins() {
-    return { data: [{ id: "diff-viewer", name: "Diff viewer", enabled: true }, { id: "terminal", name: "Terminal", enabled: false }] };
+  async plugins() {
+    return {
+      data: [
+        { id: "opencode.tool.input.repair", source: { type: "builtin" }, state: { status: "ready" } },
+        { id: "opencode.notify.desktop", source: { type: "builtin" }, state: { status: "idle" } },
+        { id: "pocket-format-on-save", source: { type: "local" }, state: { status: "ready" } },
+      ],
+    };
   }
 
   async providers() {
