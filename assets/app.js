@@ -283,7 +283,7 @@ function bindSidebar() {
     if (action === "settings") return openSettings();
     if (action === "providers") return openAuthSheet();
     if (action === "images") return openImagesSheet();
-    if (action === "customize") return openPrefsStudio();
+    if (action === "customize") return openCustomizeSheet();
     if (action === "worktrees") return openWorktreesSheet();
     if (action === "projects") return openSettings();
     if (action === "tasks") return openSchedulesSheet();
@@ -3209,6 +3209,39 @@ async function openWorktreesSheet() {
   });
 }
 
+function openCustomizeSheet() {
+  openSheet({
+    kind: "customize",
+    title: "Customize",
+    body: (root) => {
+      root.innerHTML = `<p class="sheet-note">OpenCode's own configuration, not a parallel copy.</p>
+        <div class="sheet-list">
+          ${sheetRow({ iconName: "cpu", title: "Models", sub: "Default, per-session, variants", attrs: "data-cust=models" })}
+          ${sheetRow({ iconName: "key", title: "Providers", sub: "Catalog, connections, custom", attrs: "data-cust=providers" })}
+          ${sheetRow({ iconName: "spark", title: "Agents", sub: "Build, plan, general, explore", attrs: "data-cust=agents" })}
+          ${sheetRow({ iconName: "shield", title: "Permissions", sub: "Saved allow rules", attrs: "data-cust=permissions" })}
+          ${sheetRow({ iconName: "book", title: "Skills", sub: "Available instructions", attrs: "data-cust=skills" })}
+          ${sheetRow({ iconName: "code", title: "Commands", sub: "Server command registry", attrs: "data-cust=commands" })}
+          ${sheetRow({ iconName: "file", title: "Instructions", sub: "AGENTS.md entries", attrs: "data-cust=instructions" })}
+          ${sheetRow({ iconName: "settings", title: "Appearance", sub: "Theme, accent, text, code", attrs: "data-cust=appearance" })}
+        </div>`;
+      root.addEventListener("click", (e) => {
+        const b = e.target.closest("[data-cust]");
+        if (!b) return;
+        const what = b.dataset.cust;
+        if (what === "models") return openModelSheet();
+        if (what === "providers") return openProviderCatalog();
+        if (what === "agents") return openAgentSheet();
+        if (what === "permissions") return openSavedPermissionsSheet();
+        if (what === "skills") return openSkillSheet();
+        if (what === "commands") return openCommandPalette();
+        if (what === "instructions") return openInstructionsSheet();
+        if (what === "appearance") return openPrefsStudio();
+      });
+    },
+  });
+}
+
 /* --------------------------------------------------- schedules, instructions, plugins */
 
 async function openSchedulesSheet() {
@@ -5313,12 +5346,39 @@ function bindEvents() {
   });
 
   el.attach.addEventListener("click", () => {
-    const picker = document.createElement("input");
-    picker.type = "file";
-    picker.accept = "image/*";
-    picker.multiple = true;
-    picker.addEventListener("change", () => addFiles(picker.files));
-    picker.click();
+    openSheet({
+      kind: "attach",
+      title: "Add to chat",
+      body: (root) => {
+        root.innerHTML = `<div class="sheet-list">
+          <button class="sheet-item" data-attach="camera"><span class="si-icon">${icon("image")}</span><span class="si-text"><span class="si-title">Camera</span><span class="si-sub">Take a photo</span></span></button>
+          <button class="sheet-item" data-attach="photos"><span class="si-icon">${icon("image")}</span><span class="si-text"><span class="si-title">Photos</span><span class="si-sub">Choose an image</span></span></button>
+          <button class="sheet-item" data-attach="files"><span class="si-icon">${icon("file")}</span><span class="si-text"><span class="si-title">Files</span><span class="si-sub">Attach a file</span></span></button>
+        </div>`;
+        root.addEventListener("click", (e) => {
+          const btn = e.target.closest("[data-attach]");
+          if (!btn) return;
+          const kind = btn.dataset.attach;
+          closeSheet();
+          setTimeout(() => {
+            const picker = document.createElement("input");
+            picker.type = "file";
+            if (kind === "camera") {
+              picker.accept = "image/*";
+              picker.capture = "environment";
+            } else if (kind === "photos") {
+              picker.accept = "image/*";
+              picker.multiple = true;
+            } else {
+              picker.accept = "image/*";
+              picker.multiple = true;
+            }
+            picker.addEventListener("change", () => addFiles(picker.files));
+            picker.click();
+          }, 200);
+        });
+      },
+    });
   });
   el.attachStrip.addEventListener("click", (e) => {
     const btn = e.target.closest("[data-remove-attach]");

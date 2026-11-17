@@ -248,7 +248,12 @@ fs.writeFileSync(SHOT, PNG);
   await test("Image attachment chip", async () => {
     await closeSheet();
     await page.fill("#input", "");
-    const [fc] = await Promise.all([page.waitForEvent("filechooser", { timeout: 8000 }), page.click("#btn-attach")]);
+    await page.click("#btn-attach");
+    await page.waitForSelector('[data-attach="photos"]', { timeout: 5000 });
+    const [fc] = await Promise.all([
+      page.waitForEvent("filechooser", { timeout: 8000 }),
+      page.click('[data-attach="photos"]'),
+    ]);
     await fc.setFiles(SHOT);
     await page.waitForSelector(".attach-chip img", { timeout: 8000 });
     const n = await page.$$eval(".attach-chip", (x) => x.length);
