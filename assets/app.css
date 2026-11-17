@@ -1171,19 +1171,12 @@ button.setting-row { width: 100%; text-align: left; background: none; border: 0;
 .find-time { font-size: 10.5px; color: var(--muted-2); flex: 0 0 auto; margin-left: 8px; }
 
 
-/* ---- long conversations -------------------------------------------------
-   A 1,000-message session should scroll like a 20-message one. The browser can
-   skip layout and paint for anything off screen; the intrinsic size keeps the
-   scrollbar honest until it does. */
-.msg {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 120px;
-}
-.msg:has(.stream-caret),
-.msg:has(.tool-card.open),
-.msg:has(.activity.open) {
-  content-visibility: visible;
-}
+/* Long conversations are handled in JS: the transcript signature skips
+   identical rebuilds and only new messages animate. `content-visibility: auto`
+   was tried here for off-screen layout skipping, but its placeholder sizing
+   makes scrollHeight unstable right after a rebuild, which sent "scroll to
+   bottom" to the top of the transcript. Correct scrolling wins over that
+   optimisation. */
 
 
 /* ---- connections, MCP actions, todos ------------------------------------- */

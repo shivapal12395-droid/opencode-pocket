@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">OpenCode Pocket</string>
+    <string name="notif_channel">OpenCode service</string>
+    <string name="notif_title">OpenCode Pocket</string>
+    <string name="notif_running">Local server is running</string>
+    <string name="notif_starting">Starting OpenCode…</string>
+    <string name="connect_title">Connect to OpenCode</string>
+    <string name="connect_base">Server address</string>
+    <string name="connect_secret">Password or pairing code</string>
+    <string name="connect_button">Connect</string>
+</resources>

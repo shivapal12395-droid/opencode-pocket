@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- True black, matching the app's AMOLED theme. -->
+    <style name="Theme.Pocket" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="android:windowBackground">@color/amoled</item>
+        <item name="android:statusBarColor">@color/amoled</item>
+        <item name="android:navigationBarColor">@color/amoled</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:colorAccent">@color/accent</item>
+        <item name="android:windowActionModeOverlay">true</item>
+    </style>
+</resources>

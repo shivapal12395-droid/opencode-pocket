@@ -5,3 +5,10 @@ Thumbs.db
 .env
 .env.*
 docs/raw/
+android/local.properties
+android/.gradle/
+android/app/build/
+android/app/src/main/assets/
+android/build/
+android/.idea/
+*.apk

@@ -62,6 +62,15 @@ else
   fi
 fi
 
+# The native Android shell serves the web client itself from its APK assets and
+# proxies the API, so it only needs OpenCode running. Skip the Node UI server and
+# the browser hand-off in that mode. This check must come after the server has
+# started and the password has been captured above.
+if [ "${POCKET_NATIVE:-0}" = "1" ]; then
+  echo "  Native shell: OpenCode is ready; the app serves the UI."
+  exit 0
+fi
+
 # Hand the browser an already-connected link when we know the password, so the
 # 43-character secret never has to be typed on a phone keyboard. `:` and `/` are
 # legal in a query string; only characters that would break parsing are escaped.

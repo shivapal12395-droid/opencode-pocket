@@ -224,6 +224,12 @@ async function connect(baseInput, secretInput) {
   store.set("base", resolved.base);
   store.set("secret", resolved.secret);
 
+  // The native WebView shell caches the same credentials so a cold start can
+  // reconnect without asking again. Ignored in the browser and in demo mode.
+  try {
+    window.PocketNative?.saveConfig?.(resolved.base, resolved.secret);
+  } catch {}
+
   await enterApp();
 }
 
@@ -399,6 +405,14 @@ async function copyText(text, label = "Copied") {
 }
 
 function downloadText(name, text, type = "text/markdown") {
+  // The native shell saves straight to Downloads; blob anchors are unreliable
+  // inside a WebView, so prefer the bridge when it is present.
+  try {
+    if (window.PocketNative?.saveText) {
+      window.PocketNative.saveText(name, text, type);
+      return;
+    }
+  } catch {}
   const blob = new Blob([text], { type: type + ";charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
