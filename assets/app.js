@@ -1038,7 +1038,7 @@ function fmtDuration(ms) {
   return `${m}m ${s}s`;
 }
 
-function renderActivity(items, m, streaming, keyOverride = null) {
+function renderActivity(items, m, streaming, keyOverride = null, durationMs = 0) {
   const verbosity = state.prefs.verbosity;
   const key = keyOverride ?? `${m.id}:a:${items[0].idx}`;
   const tools = items.filter((i) => i.part.type === "tool");
@@ -1055,7 +1055,7 @@ function renderActivity(items, m, streaming, keyOverride = null) {
 
   const live = streaming && items.some((i) => i.part.type === "tool" && toolStatus(i.part) === "running");
   const steps = tools.length + (reasoning.length ? 1 : 0);
-  const dur = activityDuration(items);
+  const dur = durationMs || activityDuration(items);
   const count = `${steps} ${steps === 1 ? "step" : "steps"}`;
   const title = live
     ? `Working… · ${count}`
@@ -1183,6 +1183,12 @@ function followUpsFor(m) {
     .join("")}</div>`;
 }
 
+function turnDuration(turn, live) {
+  if (!turn?.start) return 0;
+  const end = live ? Date.now() : turn.end ?? turn.start;
+  return Math.max(0, end - turn.start);
+}
+
 function renderAssistant(m, opts = {}) {
   const parts = messageParts(m);
   const streaming = opts.streaming ?? (state.busy && m.id === state.lastAssistantId);
@@ -1197,7 +1203,12 @@ function renderAssistant(m, opts = {}) {
     if (part.type === "tool" || part.type === "reasoning") {
       if (showActivity && !activityShown) {
         activityShown = true;
-        blocks.push({ kind: "activity", items: turn.items, key: "turn:" + turn.id });
+        blocks.push({
+          kind: "activity",
+          items: turn.items,
+          key: "turn:" + turn.id,
+          durationMs: turnDuration(turn, streaming),
+        });
       }
       return;
     }
@@ -1206,7 +1217,7 @@ function renderAssistant(m, opts = {}) {
 
   const html = blocks
     .map((b) => {
-      if (b.kind === "activity") return renderActivity(b.items, m, streaming, b.key);
+      if (b.kind === "activity") return renderActivity(b.items, m, streaming, b.key, b.durationMs);
       const { part, idx } = b;
       if (part.type === "text") {
         const key = `${m.id}:t:${part.ordinal ?? idx}`;
@@ -1400,7 +1411,14 @@ function renderMessages(force = false) {
   for (const m of state.messages) {
     if (m.type === "user" || turnCursor < 0) {
       turnCursor = Math.max(0, turnCursor + 1);
-      turns[turnCursor] = { id: turnCursor, items: [], activityMessageId: null };
+      turns[turnCursor] = { id: turnCursor, items: [], activityMessageId: null, start: 0, end: 0 };
+    }
+    const bucket = turns[turnCursor];
+    const created = m.time?.created ?? 0;
+    if (bucket && created) {
+      if (!bucket.start || created < bucket.start) bucket.start = created;
+      const finished = m.time?.completed ?? (m.type === "idle" ? created : 0);
+      if (finished && finished > bucket.end) bucket.end = finished;
     }
     if (m.type === "assistant") {
       messageParts(m).forEach((part, idx) => {
