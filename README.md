@@ -82,6 +82,9 @@ No phone, no server, no account: **[open the demo](https://shivapal12395-droid.g
 - Grouped by workspace, searchable, rename, delete, archive.
 - Unread and failed-run dots, find-in-conversation, and JSON export/import of a session.
 - **Fork** to branch a conversation, **compact** to summarise context before it fills up.
+- **Session tabs** keep up to six conversations open; switch without losing scroll.
+- **Scheduled tasks** (every / at / cron) run real prompts in a session, with pause and resume.
+- **Instructions viewer** shows the AGENTS.md entries the server loaded; Plugins lists the server's GUI plugins.
 - **Changes sheet** — every file the session touched, with additions/deletions and the unified patch.
 - **Run a command** — hand a shell command to the session and read the output in the transcript.
 

@@ -507,6 +507,35 @@ export class Api {
     return this.request("PUT", `/api/experimental/mcp/${encodeURIComponent(server)}`, { config });
   }
 
+  schedules(sessionID) {
+    const q = sessionID ? `?sessionID=${encodeURIComponent(sessionID)}` : "";
+    return this.request("GET", `/api/experimental/schedule${q}`);
+  }
+
+  createSchedule(payload) {
+    return this.request("POST", "/api/experimental/schedule", payload);
+  }
+
+  pauseSchedule(id) {
+    return this.request("POST", `/api/experimental/schedule/${encodeURIComponent(id)}/pause`);
+  }
+
+  resumeSchedule(id) {
+    return this.request("POST", `/api/experimental/schedule/${encodeURIComponent(id)}/resume`);
+  }
+
+  deleteSchedule(id) {
+    return this.request("DELETE", `/api/experimental/schedule/${encodeURIComponent(id)}`);
+  }
+
+  instructions(sessionID) {
+    return this.request("GET", `/api/experimental/session/${encodeURIComponent(sessionID)}/instructions/entries`);
+  }
+
+  guiPlugins() {
+    return this.request("GET", "/api/plugin/gui");
+  }
+
   mcpRemove(server) {
     return this.request("DELETE", `/api/experimental/mcp/${encodeURIComponent(server)}`);
   }

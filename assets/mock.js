@@ -880,6 +880,54 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
     return { ok: true };
   }
 
+  async schedules() {
+    this.scheduleCache = this.scheduleCache ?? [];
+    return clone(this.scheduleCache);
+  }
+
+  async createSchedule(payload) {
+    this.scheduleCache = this.scheduleCache ?? [];
+    const item = {
+      id: "sch_" + this.seq++,
+      sessionID: payload.sessionID,
+      name: payload.name ?? "Scheduled prompt",
+      when: payload.when ?? { every: "1 hour" },
+      tz: "Asia/Kolkata",
+      action: { type: "prompt", prompt: payload.prompt },
+      status: "active",
+      runCount: 0,
+      nextDueAt: Date.now() + 3600_000,
+      time: { created: now(), updated: now() },
+    };
+    this.scheduleCache.push(item);
+    return { data: clone(item) };
+  }
+
+  async pauseSchedule(id) {
+    const s = this.scheduleCache?.find((x) => x.id === id);
+    if (s) s.status = "paused";
+    return { data: clone(s ?? {}) };
+  }
+
+  async resumeSchedule(id) {
+    const s = this.scheduleCache?.find((x) => x.id === id);
+    if (s) s.status = "active";
+    return { data: clone(s ?? {}) };
+  }
+
+  async deleteSchedule(id) {
+    this.scheduleCache = (this.scheduleCache ?? []).filter((x) => x.id !== id);
+    return { ok: true };
+  }
+
+  async instructions() {
+    return { data: [{ key: "AGENTS.md", source: "project", tokens: 240, content: "# Agent instructions\n\nBe concise and verify changes." }] };
+  }
+
+  async guiPlugins() {
+    return { data: [{ id: "diff-viewer", name: "Diff viewer", enabled: true }, { id: "terminal", name: "Terminal", enabled: false }] };
+  }
+
   async providers() {
     return [{ id: "opencode", name: "OpenCode", activation: "enabled" }, { id: "anthropic", name: "Anthropic", activation: "auto" }, { id: "openai", name: "OpenAI", activation: "auto" }, { id: "google", name: "Google", activation: "auto" }, { id: "ollama", name: "Ollama", activation: "disabled" }];
   }
@@ -1018,7 +1066,10 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
   }
 
   async worktrees() {
-    return [];
+    return [
+      { id: "wt_main", name: "main", branch: "main", path: DIRS.web, dirty: false },
+      { id: "wt_fix", name: "fix/session-ttl", branch: "fix/session-ttl", path: DIRS.api, dirty: true },
+    ];
   }
 
   async defaultModel() {
@@ -1101,6 +1152,31 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
 
     // Anything destructive asks for approval first, like the real permission gate.
     if (/\b(deploy|force.?push|rm -rf)\b/i.test(text)) return this.openPermission(sid, text);
+
+    // Deterministic multi-step turn: two assistant messages in one request.
+    // Used by the activity-grouping regression test.
+    if (/multi-step/i.test(text)) {
+      const u = { id: "msg_u_" + this.seq++, type: "user", text, files: [], time: { created: now() } };
+      const a1 = {
+        id: "msg_a_" + this.seq++, type: "assistant", model: MODEL, agent: "build",
+        content: [
+          tool("call_ms1", "read", { filePath: "src/auth/session.ts" }, "read 120 lines"),
+          { type: "text", text: "I read the session code. Now I will update it.", ordinal: 1 },
+        ],
+        time: { created: now(), completed: now() },
+      };
+      const a2 = {
+        id: "msg_a_" + this.seq++, type: "assistant", model: MODEL, agent: "build",
+        content: [
+          tool("call_ms2", "edit", { filePath: "src/auth/session.ts" }, "applied 1 edit"),
+          { type: "text", text: "Both steps are done.", ordinal: 1 },
+        ],
+        time: { created: now(), completed: now() },
+      };
+      this.messageMap[sid] = [...(this.messageMap[sid] ?? []), u, a1, a2, { id: "msg_i_" + this.seq++, type: "idle", outcome: "succeeded", time: { created: now() } }];
+      this.later(() => this.emit("session.idle", { sessionID: sid }), 300);
+      return { data: { id: u.id, sessionID: sid, type: "user", payload: { text }, delivery: "steer", time: { created: now() } } };
+    }
     const userMsg = {
       id: "msg_u_" + this.seq++,
       type: "user",

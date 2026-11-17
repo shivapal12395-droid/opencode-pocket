@@ -12,6 +12,8 @@ actually did in a browser, not something it is supposed to do.
 | `suite-4.cjs` | 4 | local history store, saving on session open, JSON export, confirmed local deletion |
 | `suite-5.cjs` | 4 | live models.dev catalog, brand-coloured logos, provider search, free models including Big Pickle |
 | `suite-6.cjs` | 3 | add custom remote and local MCP servers |
+| `suite-7.cjs` | 7 | multiple session tabs (open/switch/close), scheduled tasks from the sidebar, instructions viewer, GUI plugins, voice button |
+| `suite-8.cjs` | 6 | activity panel collapsed/full-width, stop response, composer controls, one panel per request across multi-step assistant messages |
 
 ## Run
 

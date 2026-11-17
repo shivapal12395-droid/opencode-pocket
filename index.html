@@ -125,11 +125,13 @@
         <button id="side-new" class="side-new"><svg><use href="#i-plus" /></svg> New chat</button>
         <div class="side-search"><svg><use href="#i-search" /></svg><input id="side-filter" placeholder="Search chats" autocomplete="off" /></div>
         <nav class="side-nav">
-          <button data-side="tasks"><svg><use href="#i-clock" /></svg> Scheduled tasks</button>
+          <button data-side="images"><svg><use href="#i-image" /></svg> Images</button>
           <button data-side="library"><svg><use href="#i-book" /></svg> Library</button>
-          <button data-side="plugins"><svg><use href="#i-plug" /></svg> Plugins</button>
-          <button data-side="explore"><svg><use href="#i-search" /></svg> Explore</button>
-          <button data-side="projects"><svg><use href="#i-folder" /></svg> Projects &amp; workspaces</button>
+          <button data-side="customize"><svg><use href="#i-settings" /></svg> Customize</button>
+          <button data-side="projects"><svg><use href="#i-folder" /></svg> Projects</button>
+          <button data-side="worktrees"><svg><use href="#i-branch" /></svg> Worktrees</button>
+          <button data-side="tasks"><svg><use href="#i-clock" /></svg> Scheduled</button>
+          <button data-side="plugins"><svg><use href="#i-plug" /></svg> Plugins &amp; MCP</button>
         </nav>
         <div class="side-scroll">
           <section class="side-section" data-side-section="workspaces">
@@ -146,9 +148,9 @@
           </section>
         </div>
         <div class="side-bottom">
-          <button data-side="settings"><svg><use href="#i-settings" /></svg> Settings</button>
-          <button data-side="providers"><svg><use href="#i-key" /></svg> Providers</button>
-          <span id="side-conn" class="side-conn"><i></i> Connected</span>
+          <button id="side-chat" class="side-chat-pill"><svg><use href="#i-plus" /></svg> Chat</button>
+          <button id="side-avatar" class="side-avatar" aria-label="Settings">P</button>
+          <span id="side-conn" class="side-conn"><i></i></span>
         </div>
       </aside>
 
@@ -196,6 +198,7 @@
           <button id="chat-menu" class="icon-btn" aria-label="Session menu"><svg><use href="#i-more" /></svg></button>
         </header>
 
+        <div id="session-tabs" class="session-tabs" hidden></div>
         <div id="todo-panel" class="todo-panel" hidden></div>
         <main id="messages" class="messages" aria-live="polite"></main>
 
@@ -223,6 +226,7 @@
             <div class="composer-tools">
               <button id="btn-attach" class="tool-btn" aria-label="Attach image"><svg><use href="#i-image" /></svg></button>
               <button id="btn-mention" class="tool-btn" aria-label="Mention a file"><svg><use href="#i-at" /></svg></button>
+              <button id="btn-voice" class="tool-btn" aria-label="Voice input"><svg><use href="#i-brain" /></svg></button>
               <button id="chip-model" class="chip"><svg><use href="#i-cpu" /></svg><span>Model</span><svg class="chip-caret"><use href="#i-chevron" /></svg></button>
               <button id="chip-agent" class="chip"><svg><use href="#i-spark" /></svg><span>Agent</span><svg class="chip-caret"><use href="#i-chevron" /></svg></button>
               <button id="delivery-toggle" class="chip delivery" hidden aria-label="Delivery mode"><span>Steer</span></button>

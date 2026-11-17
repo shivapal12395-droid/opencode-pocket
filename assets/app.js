@@ -251,6 +251,14 @@ function bindSidebar() {
     openNewSession();
   });
   $("#side-filter")?.addEventListener("input", renderSidebar);
+  $("#side-chat")?.addEventListener("click", () => {
+    sidebarClose();
+    openNewSession();
+  });
+  $("#side-avatar")?.addEventListener("click", () => {
+    sidebarClose();
+    openSettings();
+  });
 
   $("#sidebar")?.addEventListener("click", async (e) => {
     const ses = e.target.closest("[data-side-session]");
@@ -274,10 +282,14 @@ function bindSidebar() {
     sidebarClose();
     if (action === "settings") return openSettings();
     if (action === "providers") return openAuthSheet();
+    if (action === "images") return openImagesSheet();
+    if (action === "customize") return openPrefsStudio();
+    if (action === "worktrees") return openWorktreesSheet();
     if (action === "projects") return openSettings();
-    if (action === "tasks" || action === "library" || action === "plugins" || action === "explore") {
-      toast(`${btn.textContent.trim()} — coming from the server catalog`);
-    }
+    if (action === "tasks") return openSchedulesSheet();
+    if (action === "plugins") return openPluginsSheet();
+    if (action === "library") return openInstructionsSheet();
+    if (action === "explore") return openFindSheet();
   });
 }
 
@@ -432,6 +444,7 @@ async function refreshSessions(showSkeleton = false) {
     state.sessionsCursor = res?.cursor?.previous ?? null;
     renderSessions();
     renderSidebar();
+    renderTabs();
   } finally {
     state.sessionsLoading = false;
   }
@@ -731,6 +744,7 @@ async function openSession(sessionOrId) {
   state.session = session;
   store.set("lastSessionID", session.id);
   store.set("lastWorkspace", session.location?.directory ?? state.lastWorkspace);
+  addTab(session);
   state.messages = [];
   state.permissions = [];
   updatePermBanner();
@@ -987,19 +1001,46 @@ function toolVerb(part) {
 function activitySummary(items) {
   const counts = new Map();
   let failed = 0;
+  let pending = 0;
   for (const { part } of items) {
     if (part.type !== "tool") continue;
     counts.set(toolVerb(part), (counts.get(toolVerb(part)) ?? 0) + 1);
     if (part.state?.status === "error") failed += 1;
+    if (toolStatus(part) === "pending") pending += 1;
   }
   const bits = [...counts.entries()].map(([verb, n]) => `${verb} ${n}`);
+  if (pending) bits.push(`${pending} waiting`);
   if (failed) bits.push(`${failed} failed`);
   return bits.join(" · ");
 }
 
-function renderActivity(items, m, streaming) {
+function activityDuration(items) {
+  let total = 0;
+  let any = false;
+  for (const { part } of items) {
+    if (part.type !== "tool") continue;
+    const t = part.state?.time;
+    if (!t?.start) continue;
+    const end = t.end ?? t.completed ?? (toolStatus(part) === "running" ? Date.now() : null);
+    if (!end) continue;
+    total += Math.max(0, end - t.start);
+    any = true;
+  }
+  return any ? total : 0;
+}
+
+function fmtDuration(ms) {
+  if (!ms) return "";
+  if (ms < 1000) return Math.round(ms) + "ms";
+  if (ms < 60_000) return (ms / 1000).toFixed(ms < 10_000 ? 1 : 0) + "s";
+  const m = Math.floor(ms / 60_000);
+  const s = Math.round((ms % 60_000) / 1000);
+  return `${m}m ${s}s`;
+}
+
+function renderActivity(items, m, streaming, keyOverride = null) {
   const verbosity = state.prefs.verbosity;
-  const key = `${m.id}:a:${items[0].idx}`;
+  const key = keyOverride ?? `${m.id}:a:${items[0].idx}`;
   const tools = items.filter((i) => i.part.type === "tool");
   const reasoning = items.filter((i) => i.part.type === "reasoning");
 
@@ -1014,7 +1055,13 @@ function renderActivity(items, m, streaming) {
 
   const live = streaming && items.some((i) => i.part.type === "tool" && toolStatus(i.part) === "running");
   const steps = tools.length + (reasoning.length ? 1 : 0);
-  const title = live ? "Working" : steps === 1 ? "1 step" : `${steps} steps`;
+  const dur = activityDuration(items);
+  const count = `${steps} ${steps === 1 ? "step" : "steps"}`;
+  const title = live
+    ? `Working… · ${count}`
+    : dur
+      ? `Worked for ${fmtDuration(dur)} · ${count}`
+      : `Worked · ${count}`;
   const sub = activitySummary(items);
   const body =
     verbosity === "low"
@@ -1136,32 +1183,30 @@ function followUpsFor(m) {
     .join("")}</div>`;
 }
 
-function renderAssistant(m) {
+function renderAssistant(m, opts = {}) {
   const parts = messageParts(m);
-  const streaming = state.busy && m.id === state.lastAssistantId;
+  const streaming = opts.streaming ?? (state.busy && m.id === state.lastAssistantId);
+  const turn = opts.turn ?? null;
+  const showActivity = !!opts.showActivity && !!turn?.items?.length;
+  let activityShown = false;
 
-  // Group a run of tool/reasoning parts so the prose stays the spine of the
-  // transcript; a text part always breaks the run.
+  // One activity panel per user request: tool/reasoning parts of every
+  // assistant step in this turn live in a single group, rendered once.
   const blocks = [];
-  let run = [];
-  const flushRun = () => {
-    if (run.length) {
-      blocks.push({ kind: "activity", items: run });
-      run = [];
-    }
-  };
   parts.forEach((part, idx) => {
-    if (part.type === "tool" || part.type === "reasoning") run.push({ part, idx });
-    else {
-      flushRun();
-      blocks.push({ kind: "part", part, idx });
+    if (part.type === "tool" || part.type === "reasoning") {
+      if (showActivity && !activityShown) {
+        activityShown = true;
+        blocks.push({ kind: "activity", items: turn.items, key: "turn:" + turn.id });
+      }
+      return;
     }
+    blocks.push({ kind: "part", part, idx });
   });
-  flushRun();
 
   const html = blocks
     .map((b) => {
-      if (b.kind === "activity") return renderActivity(b.items, m, streaming);
+      if (b.kind === "activity") return renderActivity(b.items, m, streaming, b.key);
       const { part, idx } = b;
       if (part.type === "text") {
         const key = `${m.id}:t:${part.ordinal ?? idx}`;
@@ -1347,14 +1392,44 @@ function renderMessages(force = false) {
   // unknown still renders (nothing in a transcript should silently disappear).
   // A failed turn records the same error twice — on the assistant step and on the
   // closing idle marker — so remember what has already been shown and skip the repeat.
+  // Build one activity bucket per user request. OpenCode emits several
+  // assistant messages per turn (one per step); grouping by message produced a
+  // "Worked for N steps" panel under every step. The bucket fixes that.
+  const turns = [];
+  let turnCursor = -1;
+  for (const m of state.messages) {
+    if (m.type === "user" || turnCursor < 0) {
+      turnCursor = Math.max(0, turnCursor + 1);
+      turns[turnCursor] = { id: turnCursor, items: [], activityMessageId: null };
+    }
+    if (m.type === "assistant") {
+      messageParts(m).forEach((part, idx) => {
+        if (part.type === "tool" || part.type === "reasoning") {
+          turns[turnCursor].items.push({ part, idx });
+          if (!turns[turnCursor].activityMessageId) turns[turnCursor].activityMessageId = m.id;
+        }
+      });
+    }
+  }
+
   let shownFailure = null;
+  let activeTurn = -1;
   for (const m of state.messages) {
     if (m.type === "user") {
+      activeTurn++;
       shownFailure = null;
       chunks.push(renderUser(m));
     } else if (m.type === "assistant") {
+      const turn = turns[activeTurn] ?? null;
+      const lastTurn = activeTurn === turns.length - 1;
       if (m.error) shownFailure = m.error.message ?? "";
-      chunks.push(renderAssistant(m));
+      chunks.push(
+        renderAssistant(m, {
+          turn,
+          showActivity: !!turn && turn.activityMessageId === m.id,
+          streaming: lastTurn && state.busy,
+        })
+      );
     } else if (m.type === "idle" && m.outcome && m.outcome !== "succeeded") {
       if (m.outcome === "failed") {
         const msg = m.error?.message ?? "";
@@ -3015,6 +3090,236 @@ async function openProviderCatalog() {
         toast(`Default model · ${ref}`);
         closeSheet();
       });
+    },
+  });
+}
+
+/* ------------------------------------------------------- session tabs */
+
+function tabs() {
+  return store.get("sessionTabs", []) ?? [];
+}
+
+function setTabs(list) {
+  store.set("sessionTabs", list.slice(0, 6));
+  renderTabs();
+}
+
+function renderTabs() {
+  const box = $("#session-tabs");
+  if (!box) return;
+  const list = tabs();
+  box.hidden = list.length < 2;
+  if (box.hidden) { box.innerHTML = ""; return; }
+  box.innerHTML = list
+    .map((id) => {
+      const s = state.sessions.find((x) => x.id === id);
+      if (!s) return "";
+      const active = state.session?.id === id;
+      return `<button class="session-tab${active ? " active" : ""}" data-tab="${escapeHtml(id)}">
+        <span>${escapeHtml((s.title || "Untitled").slice(0, 22))}</span>
+        <i data-tab-close="${escapeHtml(id)}" aria-label="Close tab">×</i>
+      </button>`;
+    })
+    .join("");
+}
+
+function addTab(session) {
+  const list = tabs().filter((id) => id !== session.id);
+  list.unshift(session.id);
+  setTabs(list);
+}
+
+function closeTab(id) {
+  const list = tabs().filter((x) => x !== id);
+  setTabs(list);
+  if (state.session?.id === id) {
+    const next = list[0] ? state.sessions.find((s) => s.id === list[0]) : null;
+    if (next) openSession(next);
+    else closeChat(false);
+  }
+}
+
+/* --------------------------------------------------- images + worktrees */
+
+function openImagesSheet() {
+  openSheet({
+    kind: "images",
+    title: "Images",
+    body: (root) => {
+      const images = (state.artifacts ?? []).filter((a) => a.kind === "html" || a.language === "html");
+      root.innerHTML = images.length
+        ? `<div class="image-grid">${images.map((a) => `<button class="image-thumb" data-art-open="${escapeHtml(a.id)}">${icon("image")}<span>${escapeHtml(a.title || "Image")}</span></button>`).join("")}</div>`
+        : `<p class="sheet-note">No images in this project yet. Attach an image in the composer or ask the agent to generate one where your provider supports it.</p>
+           <div class="prefs-foot"><button class="btn btn-ghost" id="image-attach">Attach an image</button></div>`;
+      root.addEventListener("click", (e) => {
+        const a = e.target.closest("[data-art-open]");
+        if (a) {
+          const art = state.artifacts.find((x) => x.id === a.dataset.artOpen);
+          if (art) { closeSheet(); openArtifact(art); }
+          return;
+        }
+        if (e.target.closest("#image-attach")) {
+          closeSheet();
+          $("#btn-attach")?.click();
+        }
+      });
+    },
+  });
+}
+
+async function openWorktreesSheet() {
+  openSheet({
+    kind: "worktrees",
+    title: "Worktrees",
+    body: async (root) => {
+      root.innerHTML = '<p class="sheet-note">Loading worktrees…</p>';
+      try {
+        const res = await state.api.worktrees(state.session?.projectID);
+        const list = res?.data ?? res ?? [];
+        root.innerHTML = list.length
+          ? '<div class="sheet-list">' + list.map((w) => `<div class="sheet-item">
+              <span class="si-icon">${icon("branch")}</span>
+              <span class="si-text"><span class="si-title">${escapeHtml(w.name || w.branch || "worktree")}</span>
+              <span class="si-sub">${escapeHtml(w.branch || "")}${w.dirty ? " · changes" : ""}</span></span>
+            </div>`).join("") + "</div>"
+          : '<p class="sheet-note">No worktrees for this project.</p>';
+      } catch (err) {
+        root.innerHTML = `<p class="sheet-note">${escapeHtml(err.message || "Could not load worktrees")}</p>`;
+      }
+    },
+  });
+}
+
+/* --------------------------------------------------- schedules, instructions, plugins */
+
+async function openSchedulesSheet() {
+  openSheet({
+    kind: "schedules",
+    title: "Scheduled tasks",
+    body: async (root) => {
+      root.innerHTML = '<p class="sheet-note">Loading schedules…</p>';
+      let list = [];
+      try {
+        const res = await state.api.schedules(state.session?.id);
+        list = res?.data ?? res ?? [];
+      } catch (err) {
+        root.innerHTML = `<p class="sheet-note">${escapeHtml(err.message || "Could not load schedules")}</p>`;
+        return;
+      }
+      const rows = (list ?? [])
+        .map((s) => {
+          const active = /active|scheduled|running/i.test(String(s.status));
+          const when = s.when?.every ? `every ${s.when.every}` : s.when?.cron ? `cron ${s.when.cron}` : s.when?.at ? `at ${s.when.at}` : "—";
+          return `<div class="sched-row">
+            <div class="sched-main"><b>${escapeHtml(s.name || "Scheduled prompt")}</b>
+            <span>${escapeHtml(when)} · ${escapeHtml(String(s.status ?? ""))}${s.nextDueAt ? " · next " + new Date(s.nextDueAt).toLocaleString() : ""}</span>
+            <em>${escapeHtml(String(s.prompt ?? s.action?.prompt ?? "").slice(0, 90))}</em></div>
+            <div class="sched-actions">
+              <button data-sched-toggle="${escapeHtml(s.id)}" data-active="${active}">${active ? "Pause" : "Resume"}</button>
+              <button data-sched-delete="${escapeHtml(s.id)}">Remove</button>
+            </div></div>`;
+        })
+        .join("") || '<p class="sheet-note">No schedules yet.</p>';
+
+      root.innerHTML = `<div class="sheet-list">${rows}</div>
+        <div class="sched-new">
+          <div class="prefs-head">New schedule</div>
+          <label class="field"><span class="label">Name</span><input class="input" id="sched-name" placeholder="Nightly review"></label>
+          <div class="seg" id="sched-kind"><button data-k="every" class="on">Every</button><button data-k="at">At</button><button data-k="cron">Cron</button></div>
+          <label class="field"><span class="label" id="sched-when-label">Duration (e.g. 2 hours)</span><input class="input" id="sched-when" placeholder="2 hours"></label>
+          <label class="field"><span class="label">Prompt</span><input class="input" id="sched-prompt" placeholder="Review the open changes"></label>
+          <button class="btn btn-primary btn-block" id="sched-create" style="margin-top:8px">Create schedule</button>
+        </div>`;
+
+      let kind = "every";
+      $("#sched-kind", root).addEventListener("click", (e) => {
+        const b = e.target.closest("[data-k]");
+        if (!b) return;
+        kind = b.dataset.k;
+        for (const n of $$("#sched-kind button", root)) n.classList.toggle("on", n === b);
+        $("#sched-when-label", root).textContent =
+          kind === "every" ? "Duration (e.g. 2 hours)" : kind === "at" ? "When (ISO date/time)" : "Cron expression";
+        $("#sched-when", root).placeholder =
+          kind === "every" ? "2 hours" : kind === "at" ? "2026-11-18T09:00:00+05:30" : "0 9 * * *";
+      });
+      root.addEventListener("click", async (e) => {
+        const toggle = e.target.closest("[data-sched-toggle]");
+        if (toggle) {
+          try {
+            if (toggle.dataset.active === "true") await state.api.pauseSchedule(toggle.dataset.schedToggle);
+            else await state.api.resumeSchedule(toggle.dataset.schedToggle);
+            openSchedulesSheet();
+          } catch (err) { handleError(err, "Could not change schedule"); }
+          return;
+        }
+        const del = e.target.closest("[data-sched-delete]");
+        if (del) {
+          try { await state.api.deleteSchedule(del.dataset.schedDelete); openSchedulesSheet(); }
+          catch (err) { handleError(err, "Could not remove schedule"); }
+          return;
+        }
+        if (e.target.closest("#sched-create")) {
+          if (!state.session) return toast("Open a session first");
+          const prompt = $("#sched-prompt", root).value.trim();
+          const value = $("#sched-when", root).value.trim();
+          if (!prompt || !value) return toast("Prompt and timing are required");
+          const when = kind === "every" ? { every: value } : kind === "at" ? { at: value } : { cron: value };
+          try {
+            await state.api.createSchedule({
+              sessionID: state.session.id,
+              name: $("#sched-name", root).value.trim() || "Scheduled prompt",
+              when,
+              prompt,
+            });
+            toast("Schedule created");
+            openSchedulesSheet();
+          } catch (err) { handleError(err, "Could not create schedule"); }
+        }
+      });
+    },
+  });
+}
+
+async function openInstructionsSheet() {
+  openSheet({
+    kind: "instructions",
+    title: "Instructions",
+    body: async (root) => {
+      root.innerHTML = '<p class="sheet-note">Loading instructions…</p>';
+      if (!state.session) { root.innerHTML = '<p class="sheet-note">Open a session first.</p>'; return; }
+      try {
+        const res = await state.api.instructions(state.session.id);
+        const entries = res?.data ?? res ?? [];
+        root.innerHTML = entries.length
+          ? entries.map((e) => `<div class="instr-card"><b>${escapeHtml(e.key || e.name || "Instructions")}</b>
+              <span>${escapeHtml(e.source ?? "")}${e.tokens ? " · " + e.tokens + " tokens" : ""}</span>
+              <pre>${escapeHtml(String(e.content ?? "").slice(0, 4000))}</pre></div>`).join("")
+          : '<p class="sheet-note">No instructions for this session.</p>';
+      } catch (err) {
+        root.innerHTML = `<p class="sheet-note">${escapeHtml(err.message || "Could not load instructions")}</p>`;
+      }
+    },
+  });
+}
+
+async function openPluginsSheet() {
+  openSheet({
+    kind: "plugins",
+    title: "GUI plugins",
+    body: async (root) => {
+      root.innerHTML = '<p class="sheet-note">Loading plugins…</p>';
+      try {
+        const res = await state.api.guiPlugins();
+        const list = res?.data ?? res ?? [];
+        root.innerHTML = list.length
+          ? '<div class="sheet-list">' + list.map((p) => `<div class="sheet-item"><span class="si-text">
+              <span class="si-title">${escapeHtml(p.name || p.id)}</span>
+              <span class="si-sub">${p.enabled === false ? "disabled" : "enabled"} · ${escapeHtml(p.id)}</span></span></div>`).join("") + "</div>"
+          : '<p class="sheet-note">This server exposes no GUI plugins.</p>';
+      } catch (err) {
+        root.innerHTML = `<p class="sheet-note">${escapeHtml(err.message || "Could not load plugins")}</p>`;
+      }
     },
   });
 }
@@ -4757,6 +5062,18 @@ function bindEvents() {
     }
   });
 
+  $("#session-tabs")?.addEventListener("click", async (e) => {
+    const close = e.target.closest("[data-tab-close]");
+    if (close) {
+      closeTab(close.dataset.tabClose);
+      return;
+    }
+    const tab = e.target.closest("[data-tab]");
+    if (!tab) return;
+    const s = state.sessions.find((x) => x.id === tab.dataset.tab);
+    if (s && s.id !== state.session?.id) await openSession(s);
+  });
+
   el.sessionList.addEventListener("contextmenu", (e) => {
     const row = e.target.closest(".session-row");
     if (!row) return;
@@ -4997,6 +5314,31 @@ function bindEvents() {
     if (el.input.value.startsWith("/")) openCommandPalette();
   });
   el.btnMention.addEventListener("click", () => openMentionSheet());
+  $("#btn-voice")?.addEventListener("click", () => {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) {
+      toast("Voice input is not available in this WebView");
+      return;
+    }
+    try {
+      const rec = new SR();
+      rec.lang = navigator.language || "en-US";
+      rec.interimResults = false;
+      rec.onresult = (e) => {
+        const text = e.results?.[0]?.[0]?.transcript ?? "";
+        if (!text) return;
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+        setter.call(el.input, (el.input.value ? el.input.value + " " : "") + text);
+        el.input.dispatchEvent(new Event("input", { bubbles: true }));
+        el.input.focus();
+      };
+      rec.onerror = () => toast("Voice input failed");
+      rec.start();
+      toast("Listening…");
+    } catch {
+      toast("Voice input is not available");
+    }
+  });
   el.chatDiff.addEventListener("click", () => openChangesSheet());
   el.revertBanner.addEventListener("click", (e) => {
     const btn = e.target.closest("[data-revert]");

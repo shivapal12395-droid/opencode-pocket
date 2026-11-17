@@ -241,13 +241,19 @@ MCP write paths and the task checklist.
 | Custom MCP | **yes** - add remote (URL/headers) and local (command/env) servers via `PUT /api/experimental/mcp/{server}` |
 | Commands | **yes** - server catalog in a searchable palette; action commands (`/new`, `/clear`, `/models`, `/agents`, `/export`, `/help`) run in-app, everything else is sent to the server unchanged |
 | Startup supervisor | **yes** - one daemon owner outside the Activity; health check before start, stale-port handling, bounded retries, stable UI port, same-origin proxy routing |
+| Activity grouping | **yes** - one panel per user request, collapsed by default, full width, all tool steps from every assistant message in that turn |
+| Bundled runtime DNS | **yes** - Android has no `/etc/resolv.conf`, so the musl loader is patched to read `./resolv.conf` from the app's runtime home; this removes the fresh-install `EAI_AGAIN` failure |
 | Pocket APK updater | **yes** - GitHub Releases check, SHA-256 + signing-certificate verification, system installer, progress and notes |
 | OpenCode engine updater | **part** - engine version and restart are in-app; updating a Termux installation is still the official `opencode upgrade` command inside Debian. The embedded engine is updated with the app |
-| Parallel session tabs | **no** |
-| PTY terminal | **no** |
-| Line-level diff comments | **no** |
-| Config editor / instructions viewer | **no** |
-| Scheduled tasks / voice / image previews | **no** |
+| Parallel session tabs | **yes** - up to 6 open sessions as a tab strip over the transcript; switch, close, and persist across restarts |
+| PTY terminal | **part** - one-shot shell command from the session menu; persistent PTY endpoints exist upstream but need a WebSocket client |
+| Line-level diff comments | **no** - no upstream endpoint in v2.3.0's OpenAPI |
+| Config editor | **no** - `PATCH /api/experimental/config` only accepts `shell` in v2.3.0 |
+| Instructions viewer | **yes** - `/api/experimental/session/{id}/instructions/entries` |
+| GUI plugins | **yes** - read-only list from `/api/plugin/gui` |
+| Scheduled tasks | **yes** - create (every/at/cron), list, pause, resume, remove via `/api/experimental/schedule` |
+| Voice input | **yes** - Web Speech where the WebView provides it; otherwise reported honestly |
+| Image-generation previews | **no** - `/api/experimental/generate/image` is not wired |
 
 ---
 

@@ -34,6 +34,43 @@ object EmbeddedRuntime {
     fun installed(context: Context): Boolean =
         File(runtimeDir(context), "rootfs/usr/local/bin/opencode").exists()
 
+    /**
+     * Android has no /etc/resolv.conf, and the bundled binary uses musl's own
+     * resolver, so hostname lookups fail with EAI_AGAIN even when the network
+     * is fine. Patch the loader to read ./resolv.conf from the working
+     * directory and write one with public resolvers.
+     */
+    fun patchResolver(context: Context) {
+        try {
+            val loader = File(runtimeDir(context), "rootfs/lib/ld-musl-aarch64.so.1")
+            val marker = File(runtimeDir(context), ".resolver-patched")
+            if (loader.exists() && !marker.exists()) {
+                val bytes = loader.readBytes()
+                val old = "/etc/resolv.conf".toByteArray()
+                val new = "./resolv.conf".toByteArray()
+                var idx = -1
+                outer@ for (i in 0..bytes.size - old.size) {
+                    for (j in old.indices) if (bytes[i + j] != old[j]) continue@outer
+                    idx = i
+                    break
+                }
+                if (idx >= 0) {
+                    System.arraycopy(new, 0, bytes, idx, new.size)
+                    for (i in new.size until old.size) bytes[idx + i] = 0
+                    loader.writeBytes(bytes)
+                    marker.writeText("patched")
+                    note(context, "resolver path patched")
+                } else {
+                    note(context, "resolver string not found in loader")
+                }
+            }
+            val home = File(context.filesDir, "opencode-home").also { it.mkdirs() }
+            File(home, "resolv.conf").writeText("nameserver 1.1.1.1\nnameserver 8.8.8.8\n")
+        } catch (t: Throwable) {
+            note(context, "resolver patch failed: ${t.message}")
+        }
+    }
+
     /** A TCP connect is only "something is listening", not "OpenCode is ready". */
     fun portOpen(port: Int): Boolean = try {
         java.net.Socket().use { it.connect(java.net.InetSocketAddress("127.0.0.1", port), 400) }
@@ -63,6 +100,7 @@ object EmbeddedRuntime {
      * make a reopened app look broken; this is the fix for that.
      */
     fun ensure(context: Context, preferred: Int = 4098): Credentials? {
+        patchResolver(context)
         val secret = context.getSharedPreferences("pocket", Context.MODE_PRIVATE)
             .getString("secret", "") ?: ""
         if (portOpen(preferred)) {
