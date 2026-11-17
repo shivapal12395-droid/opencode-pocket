@@ -943,14 +943,34 @@ function renderTool(part) {
       : /read|write|edit|file/i.test(part.name || "")
         ? "file"
         : "wrench";
-  const verb = status === "running" ? "Running" : failed ? "Failed" : "Ran";
+  const name = String(part.name || "").toLowerCase();
+  const done = { read: "Read", edit: "Edited", write: "Wrote", patch: "Patched", shell: "Ran", bash: "Ran", grep: "Searched", glob: "Searched", list: "Listed", webfetch: "Fetched", fetch: "Fetched", websearch: "Searched", task: "Ran", question: "Asked" };
+  const verb = status === "running" ? "Running" : failed ? "Failed" : done[name] ?? "Ran";
+  const noun =
+    {
+      read: "file",
+      edit: "file",
+      write: "file",
+      patch: "file",
+      apply_patch: "patch",
+      shell: "shell",
+      bash: "shell",
+      grep: "files",
+      glob: "files",
+      list: "files",
+      webfetch: "page",
+      fetch: "page",
+      websearch: "web",
+      task: "subagent",
+      question: "question",
+    }[String(part.name || "").toLowerCase()] ?? String(part.name || "tool");
 
   return `
     <div class="tool-card" data-tool="${key}">
       <button class="tool-head" data-toggle-tool="${key}">
         <span class="tool-icon">${icon(iconName)}</span>
-        <span class="tool-name">${verb} ${escapeHtml(part.name || "tool")}</span>
-        <span class="tool-summary">${escapeHtml(summary)}</span>
+        <span class="tool-name">${verb} ${escapeHtml(noun)}</span>
+        ${summary ? `<span class="tool-summary">${escapeHtml(summary)}</span>` : ""}
         <span class="tool-state" data-status="${failed ? "error" : status === "completed" ? "completed" : "running"}">
           ${status === "completed" ? icon("check") : failed ? icon("x") : `<span class="spinner"></span>`}
         </span>
@@ -1035,7 +1055,7 @@ function fmtDuration(ms) {
   if (ms < 60_000) return (ms / 1000).toFixed(ms < 10_000 ? 1 : 0) + "s";
   const m = Math.floor(ms / 60_000);
   const s = Math.round((ms % 60_000) / 1000);
-  return `${m}m ${s}s`;
+  return s ? `${m}m ${s}s` : `${m}m`;
 }
 
 function renderActivity(items, m, streaming, keyOverride = null, durationMs = 0) {
@@ -1063,14 +1083,24 @@ function renderActivity(items, m, streaming, keyOverride = null, durationMs = 0)
       ? `Worked for ${fmtDuration(dur)} · ${count}`
       : `Worked · ${count}`;
   const sub = activitySummary(items);
+  // Reasoning arrives as one part per step, which used to put a "Thought
+  // process" row between every tool. One merged block reads like a trace
+  // instead of a log table.
+  const trace = reasoning
+    .map((i) => (i.part.text ?? "").trim())
+    .filter(Boolean)
+    .join("\n\n");
+  const traceDone = reasoning.every((i) => i.part.time?.completed);
+  const mergedTrace = trace
+    ? renderReasoning(
+        { type: "reasoning", text: trace, time: traceDone ? { completed: 1 } : undefined, ordinal: "all" },
+        `${key}:r`
+      )
+    : "";
   const body =
     verbosity === "low"
-      ? tools.map(renderTool).join("")
-      : items
-          .map((i) =>
-            i.part.type === "tool" ? renderTool(i.part) : renderReasoning(i.part, `${m.id}:r:${i.part.ordinal ?? i.idx}`)
-          )
-          .join("");
+      ? tools.map((i) => renderTool(i.part)).join("")
+      : mergedTrace + tools.map((i) => renderTool(i.part)).join("");
 
   return `<div class="activity${live ? " live" : ""}" data-activity="${escapeHtml(key)}">
     <button class="activity-head" data-toggle-activity="${escapeHtml(key)}" aria-expanded="false">
@@ -1220,6 +1250,9 @@ function renderAssistant(m, opts = {}) {
       if (b.kind === "activity") return renderActivity(b.items, m, streaming, b.key, b.durationMs);
       const { part, idx } = b;
       if (part.type === "text") {
+        // Whitespace-only text parts are common between tool calls; rendering
+        // them as a `.md` block is what produced the dead gaps in the transcript.
+        if (!(part.text ?? "").trim()) return "";
         const key = `${m.id}:t:${part.ordinal ?? idx}`;
         const caret = streaming && idx === parts.length - 1 ? `<span class="stream-caret"></span>` : "";
         return `<div class="md" data-part="${escapeHtml(key)}">${renderMarkdown(part.text)}${caret}</div>`;
@@ -1227,6 +1260,18 @@ function renderAssistant(m, opts = {}) {
       return "";
     })
     .join("");
+
+  const hasText = parts.some((p) => p.type === "text" && (p.text ?? "").trim().length > 0);
+  const hasArtifacts = artifactCards(m).trim().length > 0;
+
+  // A step that only contains tools/reasoning is not an answer: it belongs in
+  // the activity panel, not in its own message with actions and token counters.
+  if (!hasText && !m.error && !m.retry && !hasArtifacts) {
+    if (!html.trim()) return "";
+    return `<div class="msg msg-assistant step-only" data-msg="${escapeHtml(m.id)}">
+      <div class="assistant-body">${html}</div>
+    </div>`;
+  }
 
   // A failed step keeps its reason on the message (`Assistant.error`), and a provider
   // hiccup shows up as `Assistant.retry` before any content has been written.
@@ -1267,13 +1312,11 @@ function renderUser(m) {
     .filter((f) => f.src);
   return `
     <div class="msg msg-user" data-msg="${escapeHtml(m.id)}">
-      <div class="bubble">${escapeHtml(m.text ?? "")}
-        ${
-          files.length
-            ? `<div class="files">${files.map((f) => `<img src="${escapeHtml(f.src)}" alt="${escapeHtml(f.name ?? "attachment")}">`).join("")}</div>`
-            : ""
-        }
-      </div>
+      <div class="bubble">${escapeHtml(m.text ?? "")}${
+        files.length
+          ? `<div class="files">${files.map((f) => `<img src="${escapeHtml(f.src)}" alt="${escapeHtml(f.name ?? "attachment")}">`).join("")}</div>`
+          : ""
+      }</div>
       ${stamp(m)}
       ${userActions(m)}
     </div>`;

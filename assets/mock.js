@@ -1160,6 +1160,7 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
       const a1 = {
         id: "msg_a_" + this.seq++, type: "assistant", model: MODEL, agent: "build",
         content: [
+          { type: "reasoning", text: "The session logic lives in src/auth/session.ts. Read it before editing.", ordinal: 0 },
           tool("call_ms1", "read", { filePath: "src/auth/session.ts" }, "read 120 lines"),
           { type: "text", text: "I read the session code. Now I will update it.", ordinal: 1 },
         ],
@@ -1168,6 +1169,7 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
       const a2 = {
         id: "msg_a_" + this.seq++, type: "assistant", model: MODEL, agent: "build",
         content: [
+          { type: "reasoning", text: "The cookie is written without an expiry, so it dies with the process.", ordinal: 0 },
           tool("call_ms2", "edit", { filePath: "src/auth/session.ts" }, "applied 1 edit"),
           { type: "text", text: "Both steps are done.", ordinal: 1 },
         ],

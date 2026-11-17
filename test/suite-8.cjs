@@ -91,6 +91,33 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     return `${after.users} requests · ${after.panels} panels`;
   });
 
+  await test("Activity rows keep real tool names", async () => {
+    // The expanded body used to receive the {part, idx} wrapper instead of the
+    // part, so every row degraded to "Running tool" with a spinner even after
+    // the turn finished.
+    await page.evaluate(() => {
+      const panels = [...document.querySelectorAll(".activity")];
+      const last = panels[panels.length - 1];
+      last.scrollIntoView({ block: "center" });
+      if (!last.classList.contains("open")) last.querySelector("[data-toggle-activity]").click();
+    });
+    await sleep(400);
+    const info = await page.evaluate(() => {
+      const panels = [...document.querySelectorAll(".activity")];
+      const body = panels[panels.length - 1].querySelector(".activity-body");
+      return {
+        names: [...body.querySelectorAll(".tool-name")].map((n) => n.textContent.trim()),
+        states: [...body.querySelectorAll(".tool-state")].map((n) => n.dataset.status),
+        reasoning: body.querySelectorAll(".reasoning").length,
+      };
+    });
+    assert(info.names.length >= 2, "rows=" + info.names.length);
+    assert(!info.names.some((n) => / tool$/.test(n)), "generic names: " + info.names.join(","));
+    assert(info.states.every((s) => s === "completed"), "states: " + info.states.join(","));
+    assert(info.reasoning === 1, "reasoning blocks=" + info.reasoning);
+    return `${info.names.join(" + ")}`;
+  });
+
   console.log("\n================ FEATURE TEST REPORT 8 ================");
   let pass = 0, fail = 0;
   for (const r of report) { console.log(`${r.status === "PASS" ? "PASS" : "FAIL"}  ${r.name.padEnd(36)} ${r.detail}`); r.status === "PASS" ? pass++ : fail++; }
