@@ -352,11 +352,20 @@ fs.writeFileSync(SHOT, PNG);
         return true;
       }, sel);
       if (!open) throw new Error("button missing");
-      await sleep(700);
-      const rows = await page.$$eval("#sheet-body .sheet-item, #sheet-body .setting-row, #sheet-body .stat", (x) => x.length);
-      assert(rows >= min, "rows=" + rows);
+      await sleep(900);
+      const info = await page.evaluate(() => ({
+        rows: document.querySelectorAll("#sheet-body .sheet-item, #sheet-body .setting-row, #sheet-body .stat").length,
+        note: document.querySelector("#sheet-body .sheet-note")?.textContent?.trim() ?? "",
+      }));
+      // Skills belong to a conversation: with no session open the sheet has to
+      // say so (it used to leave the previous sheet on screen and look dead).
+      if (sel === "#open-skills" && /Start a session first/.test(info.note)) {
+        await closeSheet();
+        return "explained: no session";
+      }
+      assert(info.rows >= min, "rows=" + info.rows + " note=" + info.note.slice(0, 60));
       await closeSheet();
-      return `${rows} rows`;
+      return `${info.rows} rows`;
     });
   }
 

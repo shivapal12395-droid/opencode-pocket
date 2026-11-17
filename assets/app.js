@@ -2343,8 +2343,29 @@ function diffLines(patch) {
 /* ------------------------------------------------------- find and export */
 
 /** Find a prompt or answer in the open conversation and jump to it. */
+/**
+ * A sheet that belongs to a conversation used to do nothing at all when no
+ * session was open: the row was there, the tap was swallowed, and the app looked
+ * broken. Say why, and offer the way forward.
+ */
+function needsSession(title, reason) {
+  openSheet({
+    kind: "needs-session",
+    title,
+    body: (root) => {
+      root.innerHTML = `<p class="sheet-note">Start a session first — ${escapeHtml(reason)}</p>
+        <button class="btn btn-primary btn-block" id="need-session-new" style="margin-top:14px">New session</button>`;
+      root.addEventListener("click", (e) => {
+        if (!e.target.closest("#need-session-new")) return;
+        closeSheet();
+        openNewSession();
+      });
+    },
+  });
+}
+
 function openFindSheet() {
-  if (!state.session) return;
+  if (!state.session) return needsSession("Find", "search runs over the conversation you have open.");
   const rows = state.messages
     .map((m, i) => ({ m, i }))
     .filter(({ m }) => m.type === "user" || m.type === "assistant");
@@ -2671,7 +2692,7 @@ function openCodeViewer(block) {
 }
 
 async function openMentionSheet(initial = "") {
-  if (!state.session) return;
+  if (!state.session) return needsSession("Mention a file", "the file list comes from the workspace of the session you are in.");
   openSheet({
     kind: "mention",
     title: "Mention a file",
@@ -2761,7 +2782,7 @@ function insertMention(path) {
 /* ----------------------------------------------------------------- skills */
 
 function openSkillSheet() {
-  if (!state.session) return;
+  if (!state.session) return needsSession("Skills", "a skill loads its instructions into the session you are in.");
   openSheet({
     kind: "skills",
     title: "Skills",
@@ -4150,7 +4171,7 @@ async function ensureCommands() {
 }
 
 async function openModelSheet() {
-  if (!state.session) return;
+  if (!state.session) return needsSession("Model", "the model and its variants are chosen per session.");
   let models = [];
   try {
     models = await ensureModels();
@@ -4280,7 +4301,7 @@ async function applyModel(model) {
 }
 
 async function openAgentSheet() {
-  if (!state.session) return;
+  if (!state.session) return needsSession("Agent", "an agent runs inside a session, so pick one after starting a chat.");
   let agents = [];
   try {
     agents = await ensureAgents();

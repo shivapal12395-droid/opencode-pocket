@@ -178,6 +178,40 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     return `${live[0]} -> ${done[done.length - 1]}`;
   });
 
+  await test("Customize rows explain themselves when no session is open", async () => {
+    // Models, agents and skills are per session. Their rows used to swallow the
+    // tap and leave the hub on screen, which reads as a broken button.
+    const out = [];
+    for (const key of ["models", "agents", "skills"]) {
+      const r = await page.evaluate(async (k) => {
+        document.querySelector("#sheet-close")?.click();
+        await new Promise((res) => setTimeout(res, 260));
+        if (document.querySelector("#screen-chat")?.hidden === false) {
+          document.querySelector("#chat-back")?.click();
+          await new Promise((res) => setTimeout(res, 420));
+        }
+        document.querySelector("#open-sidebar")?.click();
+        await new Promise((res) => setTimeout(res, 420));
+        document.querySelector('[data-side="customize"]')?.click();
+        await new Promise((res) => setTimeout(res, 520));
+        document.querySelector(`[data-cust="${k}"]`)?.click();
+        await new Promise((res) => setTimeout(res, 620));
+        return {
+          title: document.querySelector("#sheet-title")?.textContent?.trim() ?? "",
+          note: document.querySelector("#sheet-body .sheet-note")?.textContent?.trim() ?? "",
+          newSession: !!document.querySelector("#need-session-new"),
+        };
+      }, key);
+      out.push({ key, ...r });
+    }
+    for (const row of out) {
+      assert(/Model|Agent|Skills/.test(row.title), row.key + " title=" + row.title);
+      assert(/Start a session first/.test(row.note), row.key + " note=" + row.note.slice(0, 50));
+      assert(row.newSession, row.key + " has no way forward");
+    }
+    return out.map((r) => r.key + ":" + r.title).join(", ");
+  });
+
   console.log("\n================ FEATURE TEST REPORT 8 ================");
   let pass = 0, fail = 0;
   for (const r of report) { console.log(`${r.status === "PASS" ? "PASS" : "FAIL"}  ${r.name.padEnd(36)} ${r.detail}`); r.status === "PASS" ? pass++ : fail++; }
