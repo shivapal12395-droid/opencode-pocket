@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# OpenCode Pocket ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â one-command launcher for Termux.
+# OpenCode Pocket - one-command launcher for Termux.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -18,20 +18,20 @@ echo "  OpenCode Pocket"
 echo "  ---------------"
 
 if node -e "fetch('${API}/api/info').then(()=>process.exit(0)).catch(()=>process.exit(1))" >/dev/null 2>&1; then
-  echo "  ÃƒÂ¢Ã…â€œÃ¢â‚¬Å“ OpenCode server already running on ${API}"
+  echo "  OK - OpenCode server already running on ${API}"
   if [ -f "${PW_FILE}" ]; then
     SAVED="$(cat "${PW_FILE}" 2>/dev/null || true)"
     if [ -n "${SAVED}" ] && node -e 'fetch(process.argv[1]+"/api/info",{headers:{authorization:"Basic "+Buffer.from("opencode:"+process.argv[2]).toString("base64")}}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))' "${API}" "${SAVED}" >/dev/null 2>&1; then
       PW="${SAVED}"
       echo "  Reusing the saved password."
     else
-    echo "  Password: copy it from the terminal running the server, or run 'opencode pair'."
+      echo "  Password: copy it from the terminal running the server, or run 'opencode pair'."
     fi
   else
     echo "  Password: copy it from the terminal running the server, or run 'opencode pair'."
   fi
 else
-  echo "  ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ starting opencode serve on ${API}"
+  echo "  -> starting opencode serve on ${API}"
   # On Android, OpenCode 2 needs a Linux environment (proot-distro). Set
   # OPENCODE_CMD to the launcher that starts it, e.g.:
   #   OPENCODE_CMD="oc serve --hostname 127.0.0.1 --port 4096" ./start.sh
@@ -55,7 +55,7 @@ else
     echo "  Server password: ${PW}"
     mkdir -p "$(dirname "${PW_FILE}")" 2>/dev/null || true
     (printf '%s' "${PW}" > "${PW_FILE}" && chmod 600 "${PW_FILE}") 2>/dev/null || true
-    echo "  (or run: opencode pair  ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â then paste the whole link)"
+    echo "  (or run: opencode pair, then paste the whole link)"
   else
     echo "  Could not read the password yet."
     echo "  Check ${LOG}, or run 'opencode pair' in the server terminal."
@@ -80,13 +80,13 @@ if [ -n "${PW:-}" ]; then
   OPEN_URL="${OPEN_URL}?base=${API}&secret=${ESCAPED}"
 fi
 
-echo "  â†’ UI: http://127.0.0.1:${PORT}"
+echo "  -> UI: http://127.0.0.1:${PORT}"
 echo ""
 
 # Tapping the home-screen shortcut twice is normal: bring the UI back instead of
 # dying on EADDRINUSE.
 if node -e "fetch('http://127.0.0.1:${PORT}/').then(()=>process.exit(0)).catch(()=>process.exit(1))" >/dev/null 2>&1; then
-  echo "  âœ“ Pocket UI already running"
+  echo "  OK - Pocket UI already running"
   if command -v termux-open-url >/dev/null 2>&1; then
     termux-open-url "${OPEN_URL}" >/dev/null 2>&1 || true
   fi

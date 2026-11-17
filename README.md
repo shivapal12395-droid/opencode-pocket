@@ -119,35 +119,8 @@ phone
 > Termux its launcher misdetects Android-arm64 and downloads the Linux-x64 binary, so it
 > fails to start. Running it inside `proot-distro` is the working on-device route.
 
-### Native Android app
-
-The same web client also ships as a real Kotlin app in [`android/`](android/README.md).
-It is a WebView over the identical vanilla UI, not a second implementation:
-
-```
-WebView  ──loads──▶  PocketHttpServer (127.0.0.1:8099, inside the app)
-                          │
-                          ├── serves /index.html, /assets/*, /sw.js from APK assets
-                          └── proxies /api/*, /auth/* ──▶ 127.0.0.1:4096
-                                                            (OpenCode in Debian proot)
-```
-
-Serving the UI and the API from one loopback origin removes CORS, keeps the
-password out of the address bar, and lets SSE deltas stream straight through.
-Haptics, clipboard, sharing, Downloads, notifications, the file picker and the
-hardware back button go through the native bridge; the chat, artifacts, forms,
-queue, providers and MCP surfaces are the web client unchanged.
-
-```bash
-cd android
-./gradlew assembleDebug        # android/app/build/outputs/apk/debug/app-debug.apk
-adb install -r app/build/outputs/apk/debug/app-debug.apk
-```
-
-Then in Termux open **Settings → Allow external commands** (grants
-`com.termux.permission.RUN_COMMAND`), and disable battery optimisation for
-OpenCode Pocket so the foreground service survives a locked screen. OpenCode
-itself still runs in Termux/Debian — the app starts it, it does not bundle it.
+The numbered steps below are the browser/PWA path — no build step. The native
+APK is covered [further down](#native-android-app-optional).
 
 1. **Install Termux** from [F-Droid](https://f-droid.org/en/packages/com.termux/) or the
    [GitHub releases](https://github.com/termux/termux-app/releases). The Play Store build is
@@ -226,6 +199,47 @@ on every server restart — paste the new one, or use a fresh `oc pair` link.
 >
 > **Security:** `opencode serve` exposes a shell. Here it is bound to `127.0.0.1`, reachable
 > only from apps on the phone. Never bind it to `0.0.0.0` on public Wi-Fi or forward it.
+
+### Native Android app (optional)
+
+The same web client also ships as a real Kotlin app in [`android/`](android/README.md).
+It is a WebView over the identical vanilla UI, not a second implementation. You
+still need steps 1–2 above (Termux + OpenCode in Debian) — the APK starts the
+daemon itself and serves the UI, so there is no Chrome and no `start.sh` UI
+server in this path:
+
+```
+WebView  ──loads──▶  PocketHttpServer (127.0.0.1:8099, inside the app)
+                          │
+                          ├── serves /index.html, /assets/*, /sw.js from APK assets
+                          └── proxies /api/*, /auth/* ──▶ 127.0.0.1:4096
+                                                            (OpenCode in Debian proot)
+```
+
+One origin means no CORS, no password in the address bar, and live SSE through
+the same socket. Haptics, clipboard, sharing, Downloads, notifications, the file
+picker and the back button go through the native bridge; the chat, artifacts,
+forms, queue, providers and MCP surfaces are the web client unchanged.
+
+Build on a machine with the Android SDK (the Gradle task copies the current web
+assets into the APK), then install:
+
+```bash
+cd android
+./gradlew assembleDebug
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+On the phone, open **Termux → Settings → Allow external commands** so the
+foreground service may run `start.sh`, and disable battery optimisation for
+OpenCode Pocket. That is it — the app starts OpenCode and connects itself.
+
+> **One port, one owner.** The APK binds `127.0.0.1:8099` itself. If you also run
+> `bash start.sh` (or `node server.mjs --port 8099`) in Termux, whichever got the
+> port first wins and the other silently serves nothing — a stale service worker
+> can then make it look like the app ignored your update. Stop the Termux UI
+> before launching the APK, or start only the daemon with
+> `POCKET_NATIVE=1 OPENCODE_CMD="oc ~/projects serve --hostname 127.0.0.1 --port 4096" bash start.sh`.
 
 ### Opening the app already connected
 
