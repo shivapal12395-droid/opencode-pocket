@@ -3,6 +3,7 @@ import { renderMarkdown, escapeHtml } from "./markdown.js";
 import { formCardHtml, buildAnswer, missingRequired, applyFormConditions, readFormValues } from "./forms.js";
 import { getPrefs, setPref, onPrefs, applyPrefs, ACCENTS, DEFAULTS, densityLabel, verbosityLabel, verbosityHint, scaleLabel } from "./prefs.js";
 import { detectArtifacts, artifactCardHtml, artifactBodyHtml } from "./artifacts.js";
+import * as History from "./history.js";
 
 /* ---------------------------------------------------------------- utils */
 
@@ -76,6 +77,7 @@ const state = {
   sheetClosing: false,
   artifactClosing: false,
   showArchived: store.get("showArchived", false),
+  lastWorkspace: store.get("lastWorkspace", ""),
   chatOpen: false,
   lastAssistantId: null,
   pendingRender: 0,
@@ -174,6 +176,109 @@ function applyTheme() {
   const meta = document.querySelector('meta[name="theme-color"]');
   const surface = { light: "#fafafa", dark: "#0b0f14", amoled: "#000000" }[resolved] ?? "#0b0f14";
   if (meta) meta.content = surface;
+}
+
+/* ------------------------------------------------------- left sidebar */
+
+function sidebarOpen() {
+  const s = $("#sidebar");
+  const b = $("#sidebar-backdrop");
+  if (!s || !b) return;
+  s.hidden = false;
+  b.hidden = false;
+  history.pushState({ sidebar: true }, "");
+  requestAnimationFrame(() => {
+    s.classList.add("open");
+    b.classList.add("open");
+  });
+  renderSidebar();
+  haptic(6);
+}
+
+function sidebarClose() {
+  const s = $("#sidebar");
+  const b = $("#sidebar-backdrop");
+  if (!s || s.hidden) return;
+  s.classList.remove("open");
+  b.classList.remove("open");
+  setTimeout(() => {
+    if (s.classList.contains("open")) return;
+    s.hidden = true;
+    b.hidden = true;
+  }, 240);
+}
+
+function pinnedIds() {
+  return store.get("pinnedSessions", []);
+}
+
+function renderSidebar() {
+  const filter = ($("#side-filter")?.value ?? "").toLowerCase().trim();
+  const sessions = (state.sessions ?? []).filter((s) => !s.time?.archived);
+  const pinned = new Set(pinnedIds());
+  const workspaces = [...new Set(sessions.map((s) => s.location?.directory).filter(Boolean))];
+  const active = state.session?.location?.directory || state.lastWorkspace || workspaces[0] || "";
+  const sideItem = (s) => `<div class="side-item${state.session?.id === s.id ? " active" : ""}" data-side-session="${escapeHtml(s.id)}">
+      <span class="si-label">${escapeHtml(s.title?.trim() || "Untitled")}</span>
+      ${s.outcome === "failed" || s.outcome === "error" ? '<span class="si-dot"></span>' : ""}
+    </div>`;
+
+  const ws = $("#side-workspaces");
+  if (ws) ws.innerHTML = workspaces
+    .map((d) => `<div class="side-item${d === active ? " active" : ""}" data-side-workspace="${escapeHtml(d)}">
+      <span class="si-label">${escapeHtml(basename(d) || d)}</span></div>`)
+    .join("") || '<div class="side-item">No workspaces yet</div>';
+
+  const pin = $("#side-pinned");
+  if (pin) pin.innerHTML = sessions.filter((s) => pinned.has(s.id) && (!filter || s.title?.toLowerCase().includes(filter)))
+    .map(sideItem).join("") || '<div class="side-item">Pin a chat to see it here</div>';
+
+  const rec = $("#side-recents");
+  if (rec) rec.innerHTML = sessions.filter((s) => !pinned.has(s.id) && (!filter || s.title?.toLowerCase().includes(filter)))
+    .slice(0, 40).map(sideItem).join("") || '<div class="side-item">No recent chats</div>';
+
+  const conn = $("#side-conn");
+  if (conn) conn.innerHTML = `<i></i> ${state.online ? "Connected" : "Connecting…"}`;
+}
+
+function bindSidebar() {
+  $("#open-sidebar")?.addEventListener("click", sidebarOpen);
+  $("#chat-sidebar")?.addEventListener("click", sidebarOpen);
+  $("#side-collapse")?.addEventListener("click", sidebarClose);
+  $("#sidebar-backdrop")?.addEventListener("click", sidebarClose);
+  $("#side-new")?.addEventListener("click", () => {
+    sidebarClose();
+    openNewSession();
+  });
+  $("#side-filter")?.addEventListener("input", renderSidebar);
+
+  $("#sidebar")?.addEventListener("click", async (e) => {
+    const ses = e.target.closest("[data-side-session]");
+    if (ses) {
+      const s = state.sessions.find((x) => x.id === ses.dataset.sideSession);
+      sidebarClose();
+      if (s) await openSession(s);
+      return;
+    }
+    const w = e.target.closest("[data-side-workspace]");
+    if (w) {
+      state.lastWorkspace = w.dataset.sideWorkspace;
+      store.set("lastWorkspace", state.lastWorkspace);
+      renderSidebar();
+      toast(`Workspace · ${basename(state.lastWorkspace) || state.lastWorkspace}`);
+      return;
+    }
+    const btn = e.target.closest("[data-side]");
+    if (!btn) return;
+    const action = btn.dataset.side;
+    sidebarClose();
+    if (action === "settings") return openSettings();
+    if (action === "providers") return openAuthSheet();
+    if (action === "projects") return openSettings();
+    if (action === "tasks" || action === "library" || action === "plugins" || action === "explore") {
+      toast(`${btn.textContent.trim()} — coming from the server catalog`);
+    }
+  });
 }
 
 /* ---------------------------------------------------------------- toast */
@@ -286,9 +391,25 @@ async function refreshSessions(showSkeleton = false) {
   if (showSkeleton) renderSessionSkeleton();
   try {
     const res = await state.api.listSessions({ search: state.search, limit: 50 });
-    state.sessions = res?.data ?? [];
+    const remote = res?.data ?? [];
+    const local = await History.getSessions().catch(() => []);
+    const ids = new Set(remote.map((s) => s.id));
+    const q = state.search.toLowerCase();
+    // Keep local-only copies of sessions deleted upstream until the user
+    // explicitly deletes them, and apply the same search filter to them.
+    state.sessions = [
+      ...remote,
+      ...local.filter(
+        (s) =>
+          !ids.has(s.id) &&
+          !s.time?.archived &&
+          (!q || (s.title ?? "").toLowerCase().includes(q) || (s.location?.directory ?? "").toLowerCase().includes(q))
+      ),
+    ];
+    History.putSessions(remote).catch(() => {});
     state.sessionsCursor = res?.cursor?.previous ?? null;
     renderSessions();
+    renderSidebar();
   } finally {
     state.sessionsLoading = false;
   }
@@ -650,11 +771,25 @@ async function loadMessages() {
     const res = await state.api.messages(state.session.id, { limit: 80, order: "desc" });
     state.messages = (res?.data ?? []).slice().reverse();
     state.messagesCursor = res?.cursor?.previous ?? null;
+    // Keep an on-device recovery copy. It is never expired or auto-deleted.
+    History.putSession(state.session).catch(() => {});
+    History.putMessages(state.session.id, state.messages).catch(() => {});
     renderMessages(firstLoad);
     // Both are cheap and both block work if ignored: a waiting question, or a
     // prompt still sitting in the queue.
     loadForms();
     loadInbox();
+  } catch (err) {
+    // Server temporarily unavailable: the local copy keeps the conversation
+    // readable instead of showing an empty screen.
+    const cached = await History.getMessages(state.session.id).catch(() => []);
+    if (cached.length) {
+      state.messages = cached.sort((a, b) => (a.time?.created ?? 0) - (b.time?.created ?? 0));
+      renderMessages(firstLoad);
+      toast("Showing saved copy · server offline");
+    } else {
+      handleError(err, "Could not load messages");
+    }
   } finally {
     state.messagesLoading = false;
   }
@@ -863,6 +998,35 @@ function renderActivity(items, m, streaming) {
       ${icon("chevron", "caret")}
     </button>
     <div class="activity-body">${body}</div>
+  </div>`;
+}
+
+/* ------------------------------------------------------- welcome state */
+
+const STARTERS = [
+  { label: "Build a new feature", prompt: "Add a new feature to this project. First explore the structure, then propose a small, focused implementation and make the change.", icon: "code" },
+  { label: "Explain this project", prompt: "Explain what this project does, its main components, and how they fit together. Keep it concise.", icon: "book" },
+  { label: "Find and fix bugs", prompt: "Look for likely bugs or edge cases in this project. Report the top issues with file references, then fix the most important one.", icon: "wrench" },
+  { label: "Review recent changes", prompt: "Review the recent changes in this workspace. Summarise what changed and flag anything risky.", icon: "diff" },
+  { label: "Write tests", prompt: "Identify an important untested path in this project and add focused tests for it.", icon: "check" },
+  { label: "Explore project files", prompt: "Explore the project files and give me a quick map of the directory structure and key entry points.", icon: "folder" },
+];
+
+function welcomeHtml() {
+  const dir = basename(state.session?.location?.directory || workspaceDir() || "") || "workspace";
+  const model = state.session?.model;
+  const modelLabel = model ? (model.name || `${model.providerID}/${model.id}`) : "Default model";
+  return `<div class="welcome">
+    <div class="welcome-mark">${icon("spark")}</div>
+    <h1>What would you like to build today?</h1>
+    <p>${escapeHtml(dir)} <span class="welcome-sep">·</span> ${escapeHtml(modelLabel)}</p>
+    <div class="welcome-starters">
+      ${STARTERS.map(
+        (s) => `<button class="starter" data-starter="${escapeHtml(s.prompt)}">
+          <span class="starter-icon">${icon(s.icon)}</span><span>${escapeHtml(s.label)}</span>
+        </button>`
+      ).join("")}
+    </div>
   </div>`;
 }
 
@@ -1180,7 +1344,7 @@ function renderMessages(force = false) {
   }
 
   if (!chunks.length) {
-    el.messages.innerHTML = `<div class="empty">${icon("spark")}<b>Fresh start</b>Ask anything, or type / for commands.</div>`;
+    el.messages.innerHTML = welcomeHtml();
     return;
   }
 
@@ -1845,6 +2009,8 @@ function attachmentsPayload() {
 async function sendMessage() {
   const text = el.input.value.trim();
   if (!state.session) return;
+
+  if (text.startsWith("/") && executeCommand(el.input.value)) return;
 
   if (!text && state.busy) {
     await interrupt();
@@ -2728,6 +2894,98 @@ const connectedLabel = (conn) => {
   return conn.type ?? "Connected";
 };
 
+/* ------------------------------------------------- provider catalog (models.dev) */
+
+const PROVIDER_COLORS = {
+  opencode: "#f5f5f5", anthropic: "#d97757", openai: "#10a37f", google: "#4285f4",
+  "google-vertex": "#4285f4", deepseek: "#4d6bfe", openrouter: "#6366f1", groq: "#f55036",
+  mistral: "#ff7000", xai: "#ffffff", cerebras: "#7c3aed", togetherai: "#e11d48",
+  huggingface: "#ffd21e", lmstudio: "#20b2aa", "amazon-bedrock": "#ff9900",
+  azure: "#0078d4", "github-copilot": "#ffffff", "cloudflare-workers-ai": "#f6821f",
+};
+
+let catalogPromise = null;
+function providerCatalog() {
+  if (!catalogPromise) {
+    catalogPromise = fetch("https://models.dev/api.json")
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error("catalog unavailable"))))
+      .catch((e) => { catalogPromise = null; throw e; });
+  }
+  return catalogPromise;
+}
+
+const freeModels = (p) => Object.entries(p?.models ?? {}).filter(([, m]) => {
+  const c = m?.cost;
+  return c && Number(c.input ?? 0) === 0 && Number(c.output ?? 0) === 0;
+});
+
+async function openProviderCatalog() {
+  openSheet({
+    kind: "catalog",
+    title: "Provider catalog",
+    body: async (root) => {
+      root.innerHTML = '<p class="sheet-note">Loading models.dev catalog…</p>';
+      let catalog;
+      try {
+        catalog = await providerCatalog();
+      } catch {
+        root.innerHTML = '<p class="sheet-note">Could not load the provider catalog (offline). Saved connections still work.</p>';
+        return;
+      }
+      const ids = Object.keys(catalog).sort((a, b) => {
+        const fa = freeModels(catalog[a]).length, fb = freeModels(catalog[b]).length;
+        return fb - fa || catalog[a].name.localeCompare(catalog[b].name);
+      });
+      const card = (id) => {
+        const p = catalog[id];
+        const free = freeModels(p);
+        const color = PROVIDER_COLORS[id] ?? "#9aa0a6";
+        return `<button class="catalog-card" data-catalog="${escapeHtml(id)}">
+          <img src="https://models.dev/logos/${encodeURIComponent(id)}.svg" alt="" style="color:${escapeHtml(color)}" />
+          <span class="catalog-text"><span class="catalog-name">${escapeHtml(p.name ?? id)}</span>
+          <span class="catalog-sub">${free.length ? free.length + " free model" + (free.length === 1 ? "" : "s") : (Object.keys(p.models ?? {}).length + " models")}</span></span>
+          ${free.length ? '<span class="catalog-free">FREE</span>' : ""}
+        </button>`;
+      };
+      root.innerHTML = `<div class="sheet-search"><div class="search-box">${icon("search")}
+          <input class="search-input" id="catalog-search" placeholder="Search providers" autocomplete="off" /></div></div>
+        <div id="catalog-list" class="catalog-list">${ids.map(card).join("")}</div>
+        <div id="catalog-models" class="catalog-models" hidden></div>`;
+      const list = $("#catalog-list", root);
+      const models = $("#catalog-models", root);
+      $("#catalog-search", root).addEventListener("input", (e) => {
+        const q = e.target.value.toLowerCase().trim();
+        list.innerHTML = ids.filter((id) => !q || (catalog[id].name ?? id).toLowerCase().includes(q)).map(card).join("");
+      });
+      list.addEventListener("click", (e) => {
+        const btn = e.target.closest("[data-catalog]");
+        if (!btn) return;
+        const p = catalog[btn.dataset.catalog];
+        const free = freeModels(p);
+        const rows = (free.length ? free : Object.entries(p.models ?? {}).slice(0, 20))
+          .map(([id, m]) => `<button class="sheet-item" data-catalog-model="${escapeHtml(btn.dataset.catalog + "/" + id)}">
+            <span class="si-text"><span class="si-title">${escapeHtml(m.name ?? id)}</span>
+            <span class="si-sub">${escapeHtml(id)}${m.limit?.context ? " · " + Math.round(m.limit.context / 1000) + "k ctx" : ""}</span></span></button>`)
+          .join("");
+        models.hidden = false;
+        models.innerHTML = `<p class="sheet-note">${escapeHtml(p.name ?? btn.dataset.catalog)} · ${free.length ? "free models" : "models"}</p>${rows}`;
+        models.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      });
+      models.addEventListener("click", async (e) => {
+        const btn = e.target.closest("[data-catalog-model]");
+        if (!btn) return;
+        const ref = btn.dataset.catalogModel;
+        store.set("defaultModel", ref);
+        if (state.session) await state.api.switchModel(state.session.id, ref).catch(() => {});
+        toast(`Default model · ${ref}`);
+        closeSheet();
+      });
+    },
+  });
+}
+
+/* -------------------------------------------------------- connections */
+
 async function openAuthSheet() {
   openSheet({
     kind: "auth",
@@ -2746,7 +3004,6 @@ async function openAuthSheet() {
         root.innerHTML = '<p class="sheet-note">This server reports no connectable integrations. Its providers may use keys from the host environment.</p>';
         return;
       }
-
       const credById = new Map(creds.map((c) => [c.id, c]));
       const byIntegration = new Map();
       for (const c of creds) {
@@ -3053,7 +3310,11 @@ function openMcpSheet() {
         return;
       }
       if (!servers.length) {
-        root.innerHTML = '<p class="sheet-note">No MCP servers configured for this project.</p>';
+        root.innerHTML = '<p class="sheet-note">No MCP servers configured for this project.</p>' +
+          '<div class="prefs-foot"><button class="btn btn-primary" data-mcp-add>Add custom MCP server</button></div>';
+        root.addEventListener("click", (e) => {
+          if (e.target.closest("[data-mcp-add]")) openAddMcp();
+        });
         return;
       }
       root.innerHTML =
@@ -3078,11 +3339,63 @@ function openMcpSheet() {
           })
           .join("") +
         "</div>" +
-        '<div class="prefs-foot"><button class="btn btn-ghost" data-mcp-resources>View resources</button></div>';
+        '<div class="prefs-foot"><button class="btn btn-primary" data-mcp-add>Add custom MCP server</button> <button class="btn btn-ghost" data-mcp-resources>View resources</button></div>';
       root.addEventListener("click", (e) => {
         const btn = e.target.closest("[data-mcp]");
         if (btn) return mcpAction(btn.dataset.server, btn.dataset.mcp);
+        if (e.target.closest("[data-mcp-add]")) return openAddMcp();
         if (e.target.closest("[data-mcp-resources]")) return openMcpResources();
+      });
+    },
+  });
+}
+
+function openAddMcp() {
+  openSheet({
+    kind: "mcp-add",
+    title: "Add MCP server",
+    body: (root) => {
+      root.innerHTML = `<p class="sheet-note">Remote = HTTP URL · Local = command on the device. The server owns the config; Pocket only forwards it.</p>
+        <div class="seg" id="mcp-kind"><button data-k="remote" class="on">Remote</button><button data-k="local">Local</button></div>
+        <label class="field"><span class="label">Name</span><input class="input" id="mcp-name" placeholder="my-server"></label>
+        <div id="mcp-remote">
+          <label class="field"><span class="label">URL</span><input class="input" id="mcp-url" placeholder="https://example.com/mcp"></label>
+          <label class="field"><span class="label">Headers (JSON, optional)</span><input class="input" id="mcp-headers" placeholder='{"Authorization":"Bearer …"}'></label>
+        </div>
+        <div id="mcp-local" hidden>
+          <label class="field"><span class="label">Command + args</span><input class="input" id="mcp-command" placeholder="npx -y @modelcontextprotocol/server-filesystem /tmp"></label>
+          <label class="field"><span class="label">Environment (JSON, optional)</span><input class="input" id="mcp-env" placeholder='{"KEY":"value"}'></label>
+        </div>
+        <button class="btn btn-primary btn-block" id="mcp-save" style="margin-top:12px">Add server</button>`;
+      let kind = "remote";
+      $("#mcp-kind", root).addEventListener("click", (e) => {
+        const b = e.target.closest("[data-k]");
+        if (!b) return;
+        kind = b.dataset.k;
+        for (const n of $$("#mcp-kind button", root)) n.classList.toggle("on", n === b);
+        $("#mcp-remote", root).hidden = kind !== "remote";
+        $("#mcp-local", root).hidden = kind !== "local";
+      });
+      const json = (v, fallback) => {
+        if (!v?.trim()) return fallback;
+        try { return JSON.parse(v); } catch { return fallback; }
+      };
+      $("#mcp-save", root).addEventListener("click", async () => {
+        const name = $("#mcp-name", root).value.trim();
+        if (!name) return toast("Give the server a name");
+        const config = kind === "remote"
+          ? { type: "remote", url: $("#mcp-url", root).value.trim(), headers: json($("#mcp-headers", root).value, {}) }
+          : { type: "local", command: $("#mcp-command", root).value.trim().split(/\s+/), environment: json($("#mcp-env", root).value, {}) };
+        if (kind === "remote" && !config.url) return toast("Enter the server URL");
+        if (kind === "local" && !config.command.length) return toast("Enter a command");
+        try {
+          await state.api.mcpAdd(name, config);
+          closeSheet();
+          toast(`Added ${name}`);
+          setTimeout(() => openMcpSheet(), 300);
+        } catch (err) {
+          handleError(err, "Could not add MCP server");
+        }
       });
     },
   });
@@ -3260,9 +3573,24 @@ function sheetRow({ iconName, title, sub, selected, danger, attrs = "", check = 
 
 /* ---------------------------------------------------------------- model + agent */
 
+const DEFAULT_MODEL = { providerID: "opencode", id: "big-pickle" };
+
 async function ensureModels() {
   if (state.models) return state.models;
   state.models = await state.api.models();
+  const wanted = store.get("defaultModel", `${DEFAULT_MODEL.providerID}/${DEFAULT_MODEL.id}`);
+  const [prov, ...rest] = String(wanted).split("/");
+  const id = rest.join("/");
+  const found = (state.models ?? []).find(
+    (m) => m.providerID === prov && m.id === id && m.enabled !== false
+  );
+  if (found && !state.lastModel) {
+    state.lastModel = found;
+    store.set("lastModel", found);
+  } else if (!found && !state.lastModel && !state.demo) {
+    // Keep the preference, but never replace it with an unrelated model.
+    toast("Preferred model unavailable · choose a model");
+  }
   return state.models;
 }
 async function ensureAgents() {
@@ -3568,6 +3896,9 @@ function deleteSession(session) {
         if (!e.target.closest("[data-confirm]")) return;
         try {
           await state.api.deleteSession(session.id);
+          // Deleting from the server is an explicit user action: remove the
+          // local recovery copy too, so the session does not reappear.
+          History.deleteSession(session.id).catch(() => {});
           state.sessions = state.sessions.filter((s) => s.id !== session.id);
           if (state.session?.id === session.id) {
             closeSheet();
@@ -3615,6 +3946,9 @@ function sessionInfo(session) {
 /* ---------------------------------------------------------------- new session */
 
 async function openNewSession() {
+  // Resolve the preferred default against the live catalog before creating a
+  // session; otherwise a new chat could silently get an unrelated model.
+  await ensureModels().catch(() => {});
   let projects = [];
   try {
     projects = await ensureProjects();
@@ -3917,8 +4251,12 @@ function openSettings() {
               : ""
           }
           ${sheetSettingRow("download", "Import a session", "From a JSON export", "import-session")}
+          ${sheetSettingRow("download", "Export local history", "Backup every saved conversation", "history-export")}
+          ${sheetSettingRow("download", "Import local history", "Restore a Pocket backup", "history-import")}
+          ${sheetSettingRow("trash", "Delete local copy", "Only saved chats on this device", "history-clear")}
           ${sheetSettingRow("shield", "Permissions", "Rules that skip the approval sheet", "saved-permissions")}
           ${sheetSettingRow("key", "Connections", "Provider logins and saved keys", "open-auth")}
+          ${sheetSettingRow("spark", "Provider catalog", "models.dev · logos, free models", "provider-catalog")}
           ${sheetSettingRow("plug", "MCP servers", "Tools connected to this workspace", "open-mcp")}
           ${sheetSettingRow("cpu", "Providers", "Model providers this server reaches", "open-providers")}
           ${sheetSettingRow("book", "Skills", "Instructions available to the agent", "open-skills")}
@@ -3971,6 +4309,48 @@ function openSettings() {
           closeSheet();
           setTimeout(openConnectionSheet, 220);
         }
+        if (e.target.closest("#history-export")) {
+          const data = await History.exportWithMessages();
+          downloadText(`opencode-pocket-history-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(data, null, 2));
+          toast("Local history exported");
+          return;
+        }
+        if (e.target.closest("#history-import")) {
+          const picker = document.createElement("input");
+          picker.type = "file";
+          picker.accept = "application/json,.json";
+          picker.addEventListener("change", async () => {
+            const file = picker.files?.[0];
+            if (!file) return;
+            try {
+              const n = await History.importAll(JSON.parse(await file.text()));
+              toast(`Restored ${n} conversations`);
+              refreshSessions(false).catch(() => {});
+            } catch (err) {
+              handleError(err, "Could not restore backup");
+            }
+          });
+          picker.click();
+          return;
+        }
+        if (e.target.closest("#history-clear")) {
+          openSheet({
+            title: "Delete local history?",
+            body: (root) => {
+              root.innerHTML = `<p class="sheet-note">Removes the saved copies on this device. Server sessions are not touched.</p>
+                <div class="permission-actions"><button class="btn btn-ghost" data-cancel>Cancel</button>
+                <button class="btn btn-danger" data-confirm>Delete local copy</button></div>`;
+              root.addEventListener("click", async (ev) => {
+                if (ev.target.closest("[data-cancel]")) return closeSheet();
+                if (!ev.target.closest("[data-confirm]")) return;
+                await History.clearAll();
+                closeSheet();
+                toast("Local history deleted");
+              });
+            },
+          });
+          return;
+        }
         if (e.target.closest("#import-session")) {
           if (state.demo) {
             toast("Demo mode has no server to import into");
@@ -3989,6 +4369,10 @@ function openSettings() {
         }
         if (e.target.closest("#open-auth")) {
           openAuthSheet();
+          return;
+        }
+        if (e.target.closest("#provider-catalog")) {
+          openProviderCatalog();
           return;
         }
         if (e.target.closest("#open-mcp")) {
@@ -4070,6 +4454,36 @@ function openConnectionSheet() {
 
 /* ---------------------------------------------------------------- commands */
 
+// Commands whose execution is an action, not a chat prompt. The rest are
+// submitted as real prompts to the server, which expands arguments/shell
+// blocks according to its own security model.
+const ACTION_COMMANDS = {
+  new: () => openNewSession(),
+  clear: () => { state.messages = []; renderMessages(true); toast("Cleared view"); },
+  models: () => openModelSheet(),
+  agents: () => openAgentSheet(),
+  export: () => state.session && exportSession(state.session),
+  help: () => openCommandPalette(),
+};
+
+function executeCommand(raw) {
+  const match = /^\/(\S+)\s*([\s\S]*)$/.exec(raw.trim());
+  if (!match) return false;
+  const name = match[1].toLowerCase();
+  const args = match[2] ?? "";
+  const action = ACTION_COMMANDS[name];
+  if (action) {
+    el.input.value = "";
+    autoGrow();
+    updateSendButton();
+    action();
+    return true;
+  }
+  // /init, /review, /compact, /undo, /connect and custom commands are real
+  // upstream commands: send them verbatim so the server handles them.
+  return false; // caller falls through to normal send
+}
+
 function maybeShowCommandHints() {
   const value = el.input.value;
   if (!value.startsWith("/") || /\s/.test(value)) {
@@ -4081,12 +4495,52 @@ function maybeShowCommandHints() {
       const q = value.slice(1).toLowerCase();
       const matches = commands.filter((c) => c.name.toLowerCase().startsWith(q)).slice(0, 1);
       if (matches.length && value.length > 1) {
-        el.composerHint.textContent = `/${matches[0].name} — ${matches[0].description ?? ""}`;
+        el.composerHint.textContent = `/${matches[0].name} — ${matches[0].description ?? ""} · tap / for all`;
       } else {
         el.composerHint.textContent = defaultHint();
       }
     })
     .catch(() => {});
+}
+
+async function openCommandPalette() {
+  openSheet({
+    kind: "commands",
+    title: "Commands",
+    body: async (root) => {
+      root.innerHTML = '<p class="sheet-note">Loading commands…</p>';
+      let commands = [];
+      try { commands = await ensureCommands(); } catch { commands = []; }
+      const q = ($("#command-search", root)?.value ?? "").toLowerCase().trim();
+      const list = commands.filter((c) => !q || `${c.name} ${c.description ?? ""}`.toLowerCase().includes(q));
+      root.innerHTML = `<div class="sheet-search"><div class="search-box">${icon("search")}
+          <input class="search-input" id="command-search" placeholder="Search commands" autocomplete="off" /></div></div>
+        <div class="sheet-list" id="command-list">${
+          list.map((c) => `<button class="sheet-item" data-run-command="${escapeHtml("/" + c.name)}">
+            <span class="si-icon">${icon("code")}</span>
+            <span class="si-text"><span class="si-title">/${escapeHtml(c.name)}</span>
+            <span class="si-sub">${escapeHtml(c.description ?? "")}</span></span></button>`).join("")
+          || '<p class="sheet-note">No commands available on this server.</p>'
+        }</div>`;
+      const repaint = () => {
+        const q2 = $("#command-search", root).value.toLowerCase().trim();
+        const l = commands.filter((c) => !q2 || `${c.name} ${c.description ?? ""}`.toLowerCase().includes(q2));
+        $("#command-list", root).innerHTML = l.map((c) => `<button class="sheet-item" data-run-command="${escapeHtml("/" + c.name)}">
+          <span class="si-icon">${icon("code")}</span>
+          <span class="si-text"><span class="si-title">/${escapeHtml(c.name)}</span>
+          <span class="si-sub">${escapeHtml(c.description ?? "")}</span></span></button>`).join("");
+      };
+      $("#command-search", root).addEventListener("input", repaint);
+      $("#command-list", root).addEventListener("click", (e) => {
+        const btn = e.target.closest("[data-run-command]");
+        if (!btn) return;
+        el.input.value = btn.dataset.runCommand + " ";
+        closeSheet();
+        el.input.focus();
+      });
+      $("#command-search", root).focus();
+    },
+  });
 }
 
 function defaultHint() {
@@ -4121,6 +4575,7 @@ function handleError(err, fallback) {
 /* ---------------------------------------------------------------- init */
 
 function bindEvents() {
+  bindSidebar();
   // connect
   el.connectForm.addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -4205,6 +4660,14 @@ function bindEvents() {
 
   // messages interactions
   el.messages.addEventListener("click", async (e) => {
+    const starter = e.target.closest("[data-starter]");
+    if (starter) {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+      setter.call(el.input, starter.dataset.starter);
+      el.input.dispatchEvent(new Event("input", { bubbles: true }));
+      el.input.focus();
+      return;
+    }
     const copy = e.target.closest("[data-copy]");
     if (copy) {
       const code = copy.closest(".code-block")?.querySelector("code")?.textContent ?? "";
@@ -4388,6 +4851,9 @@ function bindEvents() {
     updateSendButton();
   });
 
+  el.composerHint?.addEventListener("click", () => {
+    if (el.input.value.startsWith("/")) openCommandPalette();
+  });
   el.btnMention.addEventListener("click", () => openMentionSheet());
   el.chatDiff.addEventListener("click", () => openChangesSheet());
   el.revertBanner.addEventListener("click", (e) => {
@@ -4423,7 +4889,10 @@ function bindEvents() {
   // artifact workspace (its action menu), so the sheet must be checked first —
   // otherwise one history.back() closed the artifact and left the sheet behind.
   window.addEventListener("popstate", () => {
-    if (state.sheetOpen || state.sheetClosing) closeSheet(true);
+    const side = $("#sidebar");
+    if (side && !side.hidden && side.classList.contains("open")) {
+      sidebarClose();
+    } else if (state.sheetOpen || state.sheetClosing) closeSheet(true);
     else if (state.artifact || state.artifactClosing) closeArtifact(true);
     else if (state.chatOpen) closeChat(true);
   });

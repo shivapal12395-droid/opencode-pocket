@@ -267,6 +267,7 @@ const MESSAGES = {
 };
 
 const MODELS = [
+  { providerID: "opencode", id: "big-pickle", name: "Big Pickle", type: "chat", enabled: true, variants: [], limit: { context: 1_000_000, output: 384_000 }, status: "active" },
   { providerID: "opencode", id: "deepseek-v4.1-flash-free", name: "DeepSeek V4.1 Flash Free", type: "chat", enabled: true, variants: [], limit: { context: 1_000_000, output: 384_000 }, status: "active" },
   {
     providerID: "anthropic",
@@ -871,6 +872,12 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
   async mcpServers() {    this.mcpServersCache = this.mcpServersCache ?? [
       { name: "blender-mcp", title: "Blender", status: { status: "connected" } }, { name: "playwright", title: "Playwright", status: { status: "connected" } }, { name: "tinyfish", title: "TinyFish", status: { status: "connected" } }, { name: "audio", title: "Audio", status: { status: "failed", error: "MCP server process exited with code 2" } }, { name: "godot", title: "Godot", status: { status: "disabled" } }];
     return clone(this.mcpServersCache);
+  }
+
+  async mcpAdd(name, config) {
+    this.mcpServersCache = this.mcpServersCache ?? [];
+    this.mcpServersCache.push({ name, title: name, status: { status: "disabled" }, config });
+    return { ok: true };
   }
 
   async providers() {

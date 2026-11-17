@@ -222,6 +222,27 @@ MCP write paths and the task checklist.
 4. GUI plugin panels, image-generation previews.
 5. Native app shell: foreground service + boot receiver (see README).
 
+## 10. First-open experience, sidebar and local history
+
+| Feature | Pocket |
+| --- | --- |
+| Default workspace | **yes** - created inside app storage (built-in runtime) or Termux home; remembered, changeable, never silently switched |
+| Default model | **yes** - prefers `opencode/big-pickle`, validated against the live catalog; falls back with a warning, never silently to another model |
+| First-open chat | **yes** - opens a session immediately with a welcome state and six starter prompts that submit real prompts |
+| Left sidebar | **yes** - drawer on phones, persistent column at ≥900px; search, new chat, workspaces, pinned, recents, settings, providers, connection |
+| Sidebar navigation items | **part** - Scheduled tasks, Library and Plugins are labels that report "coming from the server catalog"; they do not open a page yet |
+| Local history | **yes** - IndexedDB copy of sessions and messages, written on every load; offline fallback when the server is down; never auto-expired |
+| History reconciliation | **yes** - upstream sessions win; local-only copies are kept when a session disappears upstream |
+| Explicit deletion | **yes** - server delete removes the local copy too; "Delete local copy" is separate and confirmed |
+| Export / import | **yes** - versioned JSON backup including messages |
+| Encrypted backup | **no** - the export is plain JSON, protected only by where the user stores it |
+| Provider catalog | **yes** - live models.dev catalog (324 providers at the time of writing), brand-coloured logos, search, free-model counts, Big Pickle listed |
+| Custom provider | **no** - v2.3.0's `PATCH /api/experimental/config` only accepts `shell`; providers must be added to `opencode.jsonc` on the server |
+| Custom MCP | **yes** - add remote (URL/headers) and local (command/env) servers via `PUT /api/experimental/mcp/{server}` |
+| Commands | **yes** - server catalog in a searchable palette; action commands (`/new`, `/clear`, `/models`, `/agents`, `/export`, `/help`) run in-app, everything else is sent to the server unchanged |
+
+---
+
 ## Sources
 
 - <https://opencode.ai/docs/> and its subpages: tools, permissions, agents, skills,

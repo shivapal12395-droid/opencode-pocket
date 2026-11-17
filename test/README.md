@@ -8,6 +8,10 @@ actually did in a browser, not something it is supposed to do.
 | --- | --- | --- |
 | `suite-1.cjs` | 24 | sessions list/search/unread, markdown + tables, activity timeline, message actions, todos, VCS chip, find-in-conversation, artifacts (code/diagram/doc/HTML/diff), scroll-to-bottom, forms (incl. conditional fields and the answered record), queue/steer + inbox, preferences, connections, MCP, export |
 | `suite-2.cjs` | 26 | changes sheet + patches, session info, skills, undo/keep, compact, copy transcript, rename, model and agent pickers, slash hints, `@` mentions, image attachments, answer menu (copy/markdown/save/share), permission request + allow, new session, theme switch (light/black), providers, usage, saved permissions, import refusal in demo, archive/unarchive + filter, delete confirm, fork |
+| `suite-3.cjs` | 8 | left sidebar (open/close/backdrop/filter), session list inside it, workspace list, welcome state and its six starters, Big Pickle as the default model |
+| `suite-4.cjs` | 4 | local history store, saving on session open, JSON export, confirmed local deletion |
+| `suite-5.cjs` | 4 | live models.dev catalog, brand-coloured logos, provider search, free models including Big Pickle |
+| `suite-6.cjs` | 3 | add custom remote and local MCP servers |
 
 ## Run
 

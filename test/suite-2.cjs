@@ -300,7 +300,7 @@ fs.writeFileSync(SHOT, PNG);
     await page.click("[data-dir]");
     await page.click("#create-session");
     await page.waitForSelector("#screen-chat:not([hidden])", { timeout: 10000 });
-    await page.waitForFunction(() => document.querySelector("#messages .empty"), { timeout: 8000 });
+    await page.waitForFunction(() => document.querySelector("#messages .welcome, #messages .empty"), { timeout: 8000 });
     await page.fill("#input", "fix the logout bug");
     await page.click("#btn-send");
     await page.waitForSelector(".msg-assistant .md", { timeout: 12000 });

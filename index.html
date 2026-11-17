@@ -115,9 +115,47 @@
         </div>
       </section>
 
+      <!-- LEFT SIDEBAR (drawer on mobile, persistent column on desktop) -->
+      <div id="sidebar-backdrop" class="sidebar-backdrop" hidden></div>
+      <aside id="sidebar" class="sidebar" aria-label="Navigation" hidden>
+        <div class="side-top">
+          <div class="side-brand"><svg><use href="#i-logo" /></svg><span>OpenCode <b>Pocket</b></span></div>
+          <button id="side-collapse" class="icon-btn" aria-label="Close navigation"><svg><use href="#i-x" /></svg></button>
+        </div>
+        <button id="side-new" class="side-new"><svg><use href="#i-plus" /></svg> New chat</button>
+        <div class="side-search"><svg><use href="#i-search" /></svg><input id="side-filter" placeholder="Search chats" autocomplete="off" /></div>
+        <nav class="side-nav">
+          <button data-side="tasks"><svg><use href="#i-clock" /></svg> Scheduled tasks</button>
+          <button data-side="library"><svg><use href="#i-book" /></svg> Library</button>
+          <button data-side="plugins"><svg><use href="#i-plug" /></svg> Plugins</button>
+          <button data-side="explore"><svg><use href="#i-search" /></svg> Explore</button>
+          <button data-side="projects"><svg><use href="#i-folder" /></svg> Projects &amp; workspaces</button>
+        </nav>
+        <div class="side-scroll">
+          <section class="side-section" data-side-section="workspaces">
+            <div class="side-head"><span>Workspaces</span><button data-side-add="workspace" aria-label="Add workspace">+</button></div>
+            <div id="side-workspaces"></div>
+          </section>
+          <section class="side-section" data-side-section="pinned">
+            <div class="side-head"><span>Pinned</span></div>
+            <div id="side-pinned"></div>
+          </section>
+          <section class="side-section" data-side-section="recents">
+            <div class="side-head"><span>Recents</span></div>
+            <div id="side-recents"></div>
+          </section>
+        </div>
+        <div class="side-bottom">
+          <button data-side="settings"><svg><use href="#i-settings" /></svg> Settings</button>
+          <button data-side="providers"><svg><use href="#i-key" /></svg> Providers</button>
+          <span id="side-conn" class="side-conn"><i></i> Connected</span>
+        </div>
+      </aside>
+
       <!-- SESSIONS -->
       <section id="screen-sessions" class="screen sessions-screen" hidden>
         <header class="topbar">
+          <button id="open-sidebar" class="icon-btn side-toggle" aria-label="Open navigation"><svg><use href="#i-more" /></svg></button>
           <div class="brand">
             <span class="brand-mark"><svg><use href="#i-logo" /></svg></span>
             <span class="brand-name">OpenCode<span class="brand-tag">Pocket</span></span>
@@ -145,6 +183,7 @@
       <!-- CHAT -->
       <section id="screen-chat" class="screen chat-screen" hidden>
         <header class="topbar chat-topbar">
+          <button id="chat-sidebar" class="icon-btn side-toggle" aria-label="Open navigation"><svg><use href="#i-more" /></svg></button>
           <button id="chat-back" class="icon-btn" aria-label="Back"><svg><use href="#i-back" /></svg></button>
           <button id="chat-title" class="chat-title" title="Rename session">
             <span class="chat-title-text">Session</span>

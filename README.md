@@ -49,6 +49,13 @@ No phone, no server, no account: **[open the demo](https://shivapal12395-droid.g
 
 ## Features
 
+### First open
+- **Ready to chat** — a new install opens a session immediately, not an empty list: welcome state, six starter prompts, the workspace name and the selected model.
+- **Default workspace** — created for you and remembered; switch or add more from the sidebar or Settings.
+- **Big Pickle** — the preferred default model (`opencode/big-pickle`), validated against the live catalog before use. If it is unavailable you get a warning, not a silent swap.
+- **Left sidebar** — drawer on phones, persistent column on tablets: search, new chat, workspaces, pinned, recents, settings, providers, connection.
+- **Local history** — every conversation is also saved on the device (IndexedDB). It survives app kills, server restarts and offline periods, is never auto-deleted, and can be exported, imported or deleted explicitly.
+
 ### Chat
 - **Streaming** — text, reasoning and tool calls render live over SSE.
 - **Activity timeline** — a run of tool calls and thoughts folds into one expandable row ("4 steps · read 2 · ran 1"), live while it works. Low / medium / high verbosity.
@@ -57,7 +64,9 @@ No phone, no server, no account: **[open the demo](https://shivapal12395-droid.g
 - **Questions from the agent** — the `question` tool arrives as a form with choices, free text, multiselect and conditional fields; answering it unblocks the turn.
 - **Queue or steer** — while a turn runs, the composer picks between joining it and waiting; queued prompts show above the composer and can be cancelled or re-aimed.
 - **Provider login** — connect API keys, start and finish OAuth, or run a command login from the Connections sheet. Credentials stay on the server.
-- **MCP controls** — connect, disconnect and remove servers, and browse the resources they expose.
+- **Provider catalog** — live models.dev list with brand-coloured logos, search and free-model counts; pick a default model without opening the terminal.
+- **MCP controls** — connect, disconnect and remove servers, add remote or local custom servers, and browse the resources they expose.
+- **Command palette** — every command the server reports, searchable, with in-app actions for `/new`, `/clear`, `/models`, `/agents`, `/export` and `/help`.
 - **Task progress** — a live checklist at the top of a long task, driven by the server's todo events.
 - **Tool cards** — expand any call for its input, output and exit code; a failed tool shows the error, not just a red dot.
 - **Clear failures** — a rejected turn shows the provider's reason, a next step, and how long to wait. Retries appear as they happen.
