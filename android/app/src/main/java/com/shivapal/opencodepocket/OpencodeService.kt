@@ -40,10 +40,16 @@ class OpencodeService : Service() {
         val mode = getSharedPreferences("pocket", Context.MODE_PRIVATE)
             .getString("runtimeMode", "embedded") ?: "embedded"
         if (mode == "embedded") {
-            // MainActivity starts the bundled daemon and captures its password
-            // before loading the WebView; this service only keeps the process
-            // alive and shows the foreground notification.
-            updateNotification(getString(R.string.notif_title), "Built-in runtime running")
+            // The service owns the daemon. Starting it here means a boot or a
+            // service restart brings OpenCode back even if no Activity is open.
+            Thread {
+                val live = RuntimeSupervisor.ensure(this)
+                updateNotification(
+                    getString(R.string.notif_title),
+                    if (live != null) "Built-in runtime running on ${live.port}"
+                    else RuntimeSupervisor.lastError ?: "Built-in runtime not ready",
+                )
+            }.start()
             return
         }
         if (!hasRunCommandPermission()) {

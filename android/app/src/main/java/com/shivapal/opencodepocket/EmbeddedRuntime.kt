@@ -34,6 +34,52 @@ object EmbeddedRuntime {
     fun installed(context: Context): Boolean =
         File(runtimeDir(context), "rootfs/usr/local/bin/opencode").exists()
 
+    /** A TCP connect is only "something is listening", not "OpenCode is ready". */
+    fun portOpen(port: Int): Boolean = try {
+        java.net.Socket().use { it.connect(java.net.InetSocketAddress("127.0.0.1", port), 400) }
+        true
+    } catch (_: Throwable) {
+        false
+    }
+
+    fun healthy(port: Int, secret: String): Boolean = try {
+        val conn = URL("http://127.0.0.1:$port/api/info").openConnection() as HttpURLConnection
+        conn.connectTimeout = 1200
+        conn.readTimeout = 1500
+        if (secret.isNotEmpty()) {
+            val token = android.util.Base64.encodeToString("opencode:$secret".toByteArray(), android.util.Base64.NO_WRAP)
+            conn.setRequestProperty("Authorization", "Basic $token")
+        }
+        val ok = conn.responseCode in 200..299
+        conn.disconnect()
+        ok
+    } catch (_: Throwable) {
+        false
+    }
+
+    /**
+     * Reuse a daemon that is already running, otherwise start one on the first
+     * free port. Starting a second process on a busy port used to time out and
+     * make a reopened app look broken; this is the fix for that.
+     */
+    fun ensure(context: Context, preferred: Int = 4098): Credentials? {
+        val secret = context.getSharedPreferences("pocket", Context.MODE_PRIVATE)
+            .getString("secret", "") ?: ""
+        if (portOpen(preferred)) {
+            if (healthy(preferred, secret)) {
+                note(context, "reusing healthy daemon on $preferred")
+                return Credentials(preferred, secret)
+            }
+            note(context, "port $preferred is busy but unhealthy; looking for a free port")
+            for (p in preferred + 1..preferred + 4) {
+                if (!portOpen(p)) return startAndWait(context, p)
+            }
+            note(context, "no free port near $preferred")
+            return null
+        }
+        return startAndWait(context, preferred)
+    }
+
     /** Download + verify + unpack. Returns true when the runtime is ready. */
     fun install(context: Context): Boolean {
         if (installed(context)) return true
@@ -127,16 +173,28 @@ object EmbeddedRuntime {
     /** Start the bundled daemon and wait until it prints its password. */
     fun startAndWait(context: Context, port: Int = 4098, timeoutMs: Int = 45_000): Credentials? {
         if (!install(context)) return null
-        val h = start(context, port)
-        val deadline = System.currentTimeMillis() + timeoutMs
-        var log = ""
-        while (System.currentTimeMillis() < deadline) {
-            log += output(h, 500)
-            val m = Regex("server password\\s+(\\S+)").find(log)
-            if (m != null) return Credentials(port, m.groupValues[1])
-            if (!NativeLauncher.running(h)) break
+        for (candidate in port..port + 2) {
+            if (portOpen(candidate)) continue
+            note(context, "starting daemon on $candidate")
+            val h = start(context, candidate)
+            val deadline = System.currentTimeMillis() + timeoutMs
+            var log = ""
+            var password: String? = null
+            while (System.currentTimeMillis() < deadline) {
+                log += output(h, 400)
+                val m = Regex("server password\\s+(\\S+)").find(log)
+                if (m != null) { password = m.groupValues[1]; break }
+                if (!NativeLauncher.running(h)) break
+            }
+            if (password != null && healthy(candidate, password!!)) {
+                note(context, "daemon ready on $candidate")
+                return Credentials(candidate, password!!)
+            }
+            note(context, "daemon on $candidate failed: ${log.take(300)}")
+            stop(h)
+            // EADDRINUSE is worth retrying on the next port; anything else is not.
+            if (!log.contains("in use", ignoreCase = true)) break
         }
-        stop(h)
         return null
     }
 

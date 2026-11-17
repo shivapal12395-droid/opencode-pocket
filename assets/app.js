@@ -857,7 +857,18 @@ function ensureAssistant(msgID, data = {}) {
 function toolStatus(part) {
   const status = part.state?.status;
   if (status === "streaming") return "running";
+  if (status === "pending" || status === "queued") return "pending";
   return status ?? "running";
+}
+
+function toolDuration(part) {
+  const t = part.state?.time;
+  if (!t?.start) return "";
+  const end = t.end ?? t.completed ?? (toolStatus(part) === "running" ? Date.now() : null);
+  if (!end) return "";
+  const ms = Math.max(0, end - t.start);
+  if (ms < 1000) return ms + "ms";
+  return (ms / 1000).toFixed(ms < 10_000 ? 1 : 0) + "s";
 }
 
 function toolInput(part) {
@@ -3008,6 +3019,95 @@ async function openProviderCatalog() {
   });
 }
 
+/* -------------------------------------------------------- updates */
+
+function openUpdatesSheet() {
+  const native = window.PocketNative;
+  openSheet({
+    kind: "updates",
+    title: "Updates",
+    body: (root) => {
+      const installed = native?.updateState ? JSON.parse(native.updateState()).installed : "web";
+      const engineVersion = state.info?.version ?? "—";
+      root.innerHTML = `
+        <div class="updates-card">
+          <div class="updates-head"><span>Pocket app</span><b>${escapeHtml(installed)}</b></div>
+          <div class="updates-sub" id="apk-latest">Not checked</div>
+          <div class="updates-notes" id="apk-notes" hidden></div>
+          <div class="updates-actions">
+            <button class="btn btn-ghost" id="apk-check">Check</button>
+            <button class="btn btn-primary" id="apk-download" hidden>Download</button>
+            <button class="btn btn-primary" id="apk-install" hidden>Install</button>
+          </div>
+          <div class="updates-progress" id="apk-progress" hidden><i></i></div>
+        </div>
+        <div class="updates-card">
+          <div class="updates-head"><span>OpenCode engine</span><b>${escapeHtml(engineVersion)}</b></div>
+          <div class="updates-sub">${state.demo ? "Demo mode" : escapeHtml(native?.runtimeInfo ? JSON.parse(native.runtimeInfo()).mode : "web")} runtime</div>
+          <div class="updates-actions">
+            <button class="btn btn-ghost" id="engine-restart">Restart OpenCode</button>
+            <button class="btn btn-ghost" id="engine-help">Update command</button>
+          </div>
+        </div>
+        ${native ? "" : '<p class="sheet-note">App updates need the Android app. The engine version is read from your server.</p>'}`;
+
+      $("#apk-check", root)?.addEventListener("click", () => {
+        if (!native?.checkApkUpdate) return toast("Only in the Android app");
+        const r = JSON.parse(native.checkApkUpdate());
+        $("#apk-latest", root).textContent = r.available
+          ? `Latest: ${r.latest}`
+          : `Latest: ${r.latest || r.installed} · ${r.message}`;
+        if (r.notes) {
+          const n = $("#apk-notes", root);
+          n.hidden = false;
+          n.textContent = r.notes.slice(0, 1200);
+        }
+        if (r.available) {
+          $("#apk-download", root).hidden = false;
+          $("#apk-download", root).onclick = () => {
+            if (!native.downloadApkUpdate()) return toast("Download did not start");
+            $("#apk-progress", root).hidden = false;
+            const bar = $("#apk-progress i", root);
+            const poll = setInterval(() => {
+              const st = JSON.parse(native.updateState());
+              bar.style.width = st.progress + "%";
+              if (!st.busy) {
+                clearInterval(poll);
+                $("#apk-latest", root).textContent = st.status;
+                if (st.progress >= 100) $("#apk-install", root).hidden = false;
+              }
+            }, 700);
+          };
+        }
+      });
+      $("#apk-install", root)?.addEventListener("click", () => {
+        const ok = native?.installApkUpdate?.();
+        toast(ok ? "Opening the installer" : "Update could not be installed");
+      });
+      $("#engine-restart", root)?.addEventListener("click", () => {
+        const ok = native?.restartRuntime?.();
+        toast(ok ? "Restarting OpenCode…" : "Only in the Android app");
+      });
+      $("#engine-help", root)?.addEventListener("click", () => {
+        const mode = native?.runtimeInfo ? JSON.parse(native.runtimeInfo()).mode : "termux";
+        openSheet({
+          kind: "engine-update",
+          title: "Update OpenCode",
+          body: (r2) => {
+            r2.innerHTML = mode === "embedded"
+              ? `<p class="sheet-note">The bundled engine ships inside the Pocket app. Install the app update above, then tap Restart OpenCode.</p>`
+              : `<p class="sheet-note">Run this inside Termux. Pocket does not run Debian commands itself.</p>
+                 <pre class="tool-pre">oc shell
+opencode upgrade
+exit</pre>
+                 <p class="sheet-note">Then run <b>Restart OpenCode</b>. Sessions, config and credentials are kept.</p>`;
+          },
+        });
+      });
+    },
+  });
+}
+
 /* -------------------------------------------------------- connections */
 
 async function openAuthSheet() {
@@ -4287,6 +4387,7 @@ function openSettings() {
                  </div>`
               : ""
           }
+          ${sheetSettingRow("download", "Updates", "Pocket app and OpenCode engine", "open-updates")}
           ${sheetSettingRow("download", "Import a session", "From a JSON export", "import-session")}
           ${sheetSettingRow("download", "Export local history", "Backup every saved conversation", "history-export")}
           ${sheetSettingRow("download", "Import local history", "Restore a Pocket backup", "history-import")}
@@ -4386,6 +4487,10 @@ function openSettings() {
               });
             },
           });
+          return;
+        }
+        if (e.target.closest("#open-updates")) {
+          openUpdatesSheet();
           return;
         }
         if (e.target.closest("#import-session")) {

@@ -48,11 +48,6 @@ class MainActivity : AppCompatActivity() {
         // can be checked without watching the screen.
         if (BuildConfig.DEBUG) WebView.setWebContentsDebuggingEnabled(true)
 
-        // The loopback host is the web client *and* the API proxy. Starting it
-        // before the WebView loads means the first fetch never races the server.
-        http = PocketHttpServer(this)
-        http.start()
-
         web = WebView(this).apply {
             layoutParams = ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -64,22 +59,17 @@ class MainActivity : AppCompatActivity() {
         configureWebView()
 
         val prefs = getSharedPreferences("pocket", Context.MODE_PRIVATE)
-        val runtimeMode = prefs.getString("runtimeMode", "embedded") ?: "embedded"
-        if (runtimeMode == "embedded" && prefs.getString("lastRuntimeMode", "") != "embedded") {
-            // Cached workspaces belong to the old server; with a fresh local
-            // daemon they would be unreachable and every prompt would 500.
-            android.webkit.WebStorage.getInstance().deleteAllData()
-            val dbDir = java.io.File(filesDir, "opencode-home/.local/share/opencode")
-            listOf("opencode.db", "opencode.db-wal", "opencode.db-shm").forEach {
-                java.io.File(dbDir, it).delete()
-            }
-            prefs.edit().putString("lastRuntimeMode", "embedded").apply()
-        }
 
         // Tell the page it is inside the native shell before any app code runs,
         // then inject the back handler once the document is ready.
         web.addJavascriptInterface(PocketBridge(this), "PocketNative")
         web.webViewClient = object : WebViewClient() {
+            override fun onRenderProcessGone(view: WebView?, detail: android.webkit.RenderProcessGoneDetail?): Boolean {
+                // The WebView renderer was killed (low memory). Rebuild the
+                // activity instead of leaving a blank, dead surface.
+                recreate()
+                return true
+            }
             override fun onPageFinished(view: WebView?, url: String?) {
                 injectBackHandler()
                 if (getSharedPreferences("pocket", Context.MODE_PRIVATE)
@@ -89,7 +79,7 @@ class MainActivity : AppCompatActivity() {
 
             override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
                 if (url == null) return false
-                return if (url.startsWith(HOST) || url.startsWith("blob:") || url.startsWith("data:")) {
+                return if (url.startsWith(http.url) || url.startsWith("blob:") || url.startsWith("data:")) {
                     false
                 } else {
                     try {
@@ -102,45 +92,65 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // The bundled runtime is the default. Loading the web shell is deferred
-        // until it has printed its password, so the first API call never races
-        // the daemon. A failure falls back to the verified Termux path.
-        if (runtimeMode == "embedded") {
-            val progress = android.widget.TextView(this).apply {
-                text = "Setting up OpenCode…"
-                gravity = android.view.Gravity.CENTER
-                setBackgroundColor(android.graphics.Color.BLACK)
-                setTextColor(android.graphics.Color.WHITE)
-                textSize = 16f
-            }
-            addContentView(
-                progress,
-                android.widget.FrameLayout.LayoutParams(
-                    android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
-                    android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
-                ),
-            )
-            Thread {
-                val cred = EmbeddedRuntime.startAndWait(this@MainActivity, EMBEDDED_PORT)
-                runOnUiThread {
-                    if (cred != null) {
-                        prefs.edit()
-                            .putString("base", "http://127.0.0.1:${cred.port}")
-                            .putString("secret", cred.secret)
-                            .apply()
-                    }
-                    (progress.parent as? android.view.ViewGroup)?.removeView(progress)
-                    loadShell()
-                }
-            }.start()
-        } else {
-            loadShell()
-        }
-
-        // Start the foreground service so OpenCode is up before the first API
-        // call. It is idempotent — tapping the launcher again will not spawn a
-        // second server.
+        // The foreground service (or boot receiver) owns the daemon. The
+        // activity only waits for the supervisor and then loads the shell, so a
+        // second launch never spawns a second server.
         startService(Intent(this, OpencodeService::class.java))
+
+        val progress = android.widget.TextView(this).apply {
+            text = "Starting OpenCode..."
+            gravity = android.view.Gravity.CENTER
+            setBackgroundColor(android.graphics.Color.BLACK)
+            setTextColor(android.graphics.Color.WHITE)
+            textSize = 16f
+        }
+        addContentView(
+            progress,
+            android.widget.FrameLayout.LayoutParams(
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
+
+        Thread {
+            val mode = RuntimeSupervisor.mode(this)
+            var live = RuntimeSupervisor.ensure(this, allowStart = true)
+            if (live == null && mode == "termux") {
+                // The service starts the Termux daemon through RUN_COMMAND; give
+                // it a bounded window to answer instead of failing instantly.
+                val deadline = System.currentTimeMillis() + 20_000
+                while (live == null && System.currentTimeMillis() < deadline) {
+                    Thread.sleep(700)
+                    live = RuntimeSupervisor.ensure(this, allowStart = false)
+                }
+            }
+            val result = live
+            runOnUiThread {
+                if (result == null) {
+                    progress.text = "Could not start OpenCode.\n\n" +
+                        (RuntimeSupervisor.lastError ?: "") +
+                        "\nTap to retry, or choose Runtime → Termux in Settings."
+                    progress.setOnClickListener { recreate() }
+                    return@runOnUiThread
+                }
+                // Same-origin routing: the WebView talks only to PocketHttpServer,
+                // which proxies to the selected runtime port.
+                http = PocketHttpServer.instance(this, result.port)
+                if (!http.isRunning) {
+                    progress.text = "Could not open the local UI port.\nTap to retry."
+                    progress.setOnClickListener { recreate() }
+                    return@runOnUiThread
+                }
+                prefs.edit()
+                    .putString("base", http.url)
+                    .putString("secret", result.secret)
+                    .putString("runtimePort", result.port.toString())
+                    .apply()
+                (progress.parent as? android.view.ViewGroup)?.removeView(progress)
+                loadShell()
+            }
+        }.start()
+
         requestNotificationPermissionIfNeeded()
     }
 
@@ -148,7 +158,7 @@ class MainActivity : AppCompatActivity() {
         val prefs = getSharedPreferences("pocket", Context.MODE_PRIVATE)
         val base = prefs.getString("base", "") ?: ""
         val secret = prefs.getString("secret", "") ?: ""
-        val appBase = HOST
+        val appBase = http.url
         val url = if (secret.isNotEmpty()) {
             "$appBase/?base=${URLEncoder.encode(base, "UTF-8")}&secret=${URLEncoder.encode(secret, "UTF-8")}"
         } else {
@@ -249,12 +259,14 @@ class MainActivity : AppCompatActivity() {
         web.evaluateJavascript(js, null)
     }
 
-    /** On a fresh install, point the connect form at the loopback proxy. */
+    /** On a fresh install, point the connect form at the API base, not the UI port. */
     private fun injectDefaultBase() {
+        val base = getSharedPreferences("pocket", Context.MODE_PRIVATE)
+            .getString("base", "")?.ifEmpty { "http://127.0.0.1:4096" } ?: "http://127.0.0.1:4096"
         val js = """
             (function () {
               var f = document.getElementById('connect-url');
-              if (f && (!f.value || f.value.indexOf('4096') !== -1)) f.value = '$HOST';
+              if (f && (!f.value || f.value.indexOf('4096') !== -1 || f.value.indexOf('127.0.0.1:809') !== -1)) f.value = '${base.replace("'", "")}';
             })();
         """.trimIndent().replace("\n", " ")
         web.evaluateJavascript(js, null)
@@ -284,7 +296,8 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         filePathCallback?.onReceiveValue(null)
         filePathCallback = null
-        http.stop()
+        // The UI server is process-wide: keep it across Activity recreation so
+        // the origin (and therefore localStorage history) never changes.
         super.onDestroy()
     }
 }

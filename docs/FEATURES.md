@@ -240,6 +240,14 @@ MCP write paths and the task checklist.
 | Custom provider | **no** - v2.3.0's `PATCH /api/experimental/config` only accepts `shell`; providers must be added to `opencode.jsonc` on the server |
 | Custom MCP | **yes** - add remote (URL/headers) and local (command/env) servers via `PUT /api/experimental/mcp/{server}` |
 | Commands | **yes** - server catalog in a searchable palette; action commands (`/new`, `/clear`, `/models`, `/agents`, `/export`, `/help`) run in-app, everything else is sent to the server unchanged |
+| Startup supervisor | **yes** - one daemon owner outside the Activity; health check before start, stale-port handling, bounded retries, stable UI port, same-origin proxy routing |
+| Pocket APK updater | **yes** - GitHub Releases check, SHA-256 + signing-certificate verification, system installer, progress and notes |
+| OpenCode engine updater | **part** - engine version and restart are in-app; updating a Termux installation is still the official `opencode upgrade` command inside Debian. The embedded engine is updated with the app |
+| Parallel session tabs | **no** |
+| PTY terminal | **no** |
+| Line-level diff comments | **no** |
+| Config editor / instructions viewer | **no** |
+| Scheduled tasks / voice / image previews | **no** |
 
 ---
 

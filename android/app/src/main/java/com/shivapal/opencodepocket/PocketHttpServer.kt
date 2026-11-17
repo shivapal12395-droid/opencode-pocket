@@ -31,32 +31,53 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 class PocketHttpServer(
     private val context: Context,
-    private val port: Int = 8099,
+    private val preferredPort: Int = 8099,
     private val upstream: String = "http://127.0.0.1:4096",
 ) {
     private var server: ServerSocket? = null
     private val pool: ExecutorService = Executors.newCachedThreadPool()
     private val running = AtomicBoolean(false)
 
-    fun start() {
-        if (!running.compareAndSet(false, true)) return
-        pool.execute {
+    @Volatile
+    var boundPort: Int = preferredPort
+        private set
+
+    val url: String get() = "http://127.0.0.1:$boundPort"
+
+    /**
+     * Bind the first free loopback port. A silent EADDRINUSE used to leave the
+     * WebView pointed at whatever else owned 8099 (usually a stale Termux UI
+     * server), which is exactly how the app "opened fine once, then broke".
+     */
+    fun start(): Boolean {
+        if (!running.compareAndSet(false, true)) return true
+        for (candidate in preferredPort downTo preferredPort - 4) {
             try {
-                val socket = ServerSocket(port, 32, InetAddress.getByName("127.0.0.1"))
+                val socket = ServerSocket()
+                socket.reuseAddress = true
+                socket.bind(java.net.InetSocketAddress(InetAddress.getByName("127.0.0.1"), candidate), 32)
                 server = socket
-                while (running.get()) {
-                    try {
-                        val client = socket.accept()
-                        client.soTimeout = 0 // SSE stays open indefinitely
-                        pool.execute { handleClient(client) }
-                    } catch (e: SocketTimeoutException) {
-                        continue
-                    } catch (e: IOException) {
-                        if (running.get()) break
-                    }
-                }
+                boundPort = candidate
+                pool.execute { acceptLoop(socket) }
+                return true
             } catch (e: IOException) {
-                running.set(false)
+                // Try the next port.
+            }
+        }
+        running.set(false)
+        return false
+    }
+
+    private fun acceptLoop(socket: ServerSocket) {
+        while (running.get()) {
+            try {
+                val client = socket.accept()
+                client.soTimeout = 0 // SSE stays open indefinitely
+                pool.execute { handleClient(client) }
+            } catch (e: SocketTimeoutException) {
+                continue
+            } catch (e: IOException) {
+                if (running.get()) break
             }
         }
     }
@@ -71,6 +92,34 @@ class PocketHttpServer(
     }
 
     val isRunning: Boolean get() = running.get()
+
+    companion object {
+        @Volatile
+        private var shared: PocketHttpServer? = null
+
+        @Volatile
+        private var sharedUpstreamPort: Int = -1
+
+        /**
+         * The UI server is process-wide. Recreating the Activity must not bind a
+         * second socket (which used to silently fall back to a different port
+         * and therefore a different browser origin).
+         */
+        @Synchronized
+        fun instance(context: Context, upstreamPort: Int): PocketHttpServer {
+            val existing = shared
+            if (existing != null && existing.isRunning && sharedUpstreamPort == upstreamPort) return existing
+            existing?.stop()
+            val server = PocketHttpServer(
+                context.applicationContext,
+                upstream = "http://127.0.0.1:$upstreamPort",
+            )
+            server.start()
+            shared = server
+            sharedUpstreamPort = upstreamPort
+            return server
+        }
+    }
 
     private fun handleClient(socket: Socket) {
         try {

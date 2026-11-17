@@ -155,7 +155,101 @@ class PocketBridge(private val activity: MainActivity) {
     }
 
     @android.webkit.JavascriptInterface
+    fun restartRuntime(): Boolean {
+        return try {
+            RuntimeSupervisor.reset()
+            activity.startService(Intent(activity, OpencodeService::class.java).setAction(OpencodeService.ACTION_STOP))
+            activity.startService(Intent(activity, OpencodeService::class.java))
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                activity.recreate()
+            }, 1800)
+            true
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    @android.webkit.JavascriptInterface
+    fun runtimeInfo(): String {
+        val live = RuntimeSupervisor.snapshot
+        return org.json.JSONObject()
+            .put("mode", RuntimeSupervisor.mode(activity))
+            .put("port", live?.port ?: 0)
+            .put("connected", live != null)
+            .toString()
+    }
+
+    @android.webkit.JavascriptInterface
     fun serviceRunning(): Boolean = OpencodeService.isRunning
+
+    // ---- APK updates (GitHub releases) -------------------------------------
+    @Volatile private var pendingRelease: UpdateManager.Release? = null
+    @Volatile private var pendingApk: java.io.File? = null
+    @Volatile private var updateBusy = false
+    @Volatile private var updateStatus = ""
+
+    @android.webkit.JavascriptInterface
+    fun updateState(): String {
+        val prefs = activity.getSharedPreferences("pocket", Context.MODE_PRIVATE)
+        return org.json.JSONObject()
+            .put("installed", UpdateManager.installedVersion(activity))
+            .put("busy", updateBusy)
+            .put("progress", UpdateManager.downloadProgress)
+            .put("status", updateStatus)
+            .put("lastCheck", prefs.getString("lastUpdateCheck", "") ?: "")
+            .put("latest", pendingRelease?.version ?: "")
+            .put("notes", pendingRelease?.notes ?: "")
+            .toString()
+    }
+
+    @android.webkit.JavascriptInterface
+    fun checkApkUpdate(): String {
+        val state = UpdateManager.check(activity)
+        pendingRelease = state.latest
+        updateStatus = state.message
+        activity.getSharedPreferences("pocket", Context.MODE_PRIVATE).edit()
+            .putString("lastUpdateCheck", java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(java.util.Date()))
+            .apply()
+        return org.json.JSONObject()
+            .put("installed", state.currentVersion)
+            .put("latest", state.latest?.version ?: "")
+            .put("available", state.updateAvailable)
+            .put("notes", state.latest?.notes ?: "")
+            .put("message", state.message)
+            .toString()
+    }
+
+    @android.webkit.JavascriptInterface
+    fun downloadApkUpdate(): Boolean {
+        val release = pendingRelease ?: return false
+        if (updateBusy) return false
+        updateBusy = true
+        updateStatus = "Downloading…"
+        Thread {
+            val file = UpdateManager.download(activity, release)
+            pendingApk = file
+            updateBusy = false
+            updateStatus = if (file != null) "Downloaded and verified" else "Download failed or failed verification"
+        }.start()
+        return true
+    }
+
+    @android.webkit.JavascriptInterface
+    fun installApkUpdate(): Boolean {
+        val apk = pendingApk ?: return false
+        if (!UpdateManager.sameSigner(activity, apk)) {
+            updateStatus = "Signature does not match this installation"
+            return false
+        }
+        return try {
+            activity.runOnUiThread { UpdateManager.install(activity, apk) }
+            updateStatus = "Opening the system installer"
+            true
+        } catch (t: Throwable) {
+            updateStatus = "Could not open the installer: ${t.message}"
+            false
+        }
+    }
 
     /** A writable default project for the built-in runtime. */
     @android.webkit.JavascriptInterface
@@ -172,15 +266,9 @@ class PocketBridge(private val activity: MainActivity) {
     @android.webkit.JavascriptInterface
     fun setRuntimeMode(mode: String) {
         if (mode != "embedded" && mode != "termux") return
-        prefs.edit().putString("runtimeMode", mode).apply()
-        if (mode == "embedded") {
-            // A fresh daemon must not inherit sessions/config from the other
-            // runtime; MainActivity rebuilds the local store on next launch.
-            prefs.edit().putString("lastRuntimeMode", "").apply()
-            val dir = java.io.File(activity.filesDir, "opencode-home/.local/share/opencode")
-            listOf("opencode.db", "opencode.db-wal", "opencode.db-shm").forEach {
-                java.io.File(dir, it).delete()
-            }
-        }
+        // Switching runtimes must not delete history, sessions or credentials.
+        // Each runtime keeps its own store; the local history copy stays.
+        prefs.edit().putString("runtimeMode", mode).putString("lastRuntimeMode", mode).apply()
+        RuntimeSupervisor.reset()
     }
 }
