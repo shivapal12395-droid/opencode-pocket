@@ -230,7 +230,7 @@ MCP write paths and the task checklist.
 | Default model | **yes** - prefers `opencode/big-pickle`, validated against the live catalog; falls back with a warning, never silently to another model |
 | First-open chat | **yes** - opens a session immediately with a welcome state and six starter prompts that submit real prompts |
 | Left sidebar | **yes** - drawer on phones, persistent column at ≥900px; search, new chat, workspaces, pinned, recents, settings, providers, connection |
-| Sidebar navigation items | **part** - Scheduled tasks, Library and Plugins are labels that report "coming from the server catalog"; they do not open a page yet |
+| Sidebar navigation items | **yes** - every row opens the thing it names: Images (attached photos), Library (artifacts of the open conversation), Customize (8 config areas), Projects (server project list), Worktrees (per project, start a session in one), Scheduled tasks (per session), Plugins (the real `/api/plugin` list) |
 | Local history | **yes** - IndexedDB copy of sessions and messages, written on every load; offline fallback when the server is down; never auto-expired |
 | History reconciliation | **yes** - upstream sessions win; local-only copies are kept when a session disappears upstream |
 | Explicit deletion | **yes** - server delete removes the local copy too; "Delete local copy" is separate and confirmed |
@@ -253,8 +253,8 @@ MCP write paths and the task checklist.
 | Line-level diff comments | **no** - no upstream endpoint in v2.3.0's OpenAPI |
 | Config editor | **no** - `PATCH /api/experimental/config` only accepts `shell` in v2.3.0 |
 | Instructions viewer | **yes** - `/api/experimental/session/{id}/instructions/entries` |
-| GUI plugins | **yes** - read-only list from `/api/plugin/gui` |
-| Scheduled tasks | **yes** - create (every/at/cron), list, pause, resume, remove via `/api/experimental/schedule` |
+| Plugins | **yes** - `/api/plugin` list with source and state; each entry is what the server actually loaded |
+| Scheduled tasks | **yes** - create (every/at/cron), list, pause, resume, remove via `/api/experimental/schedule`; the server's `experimental.schedules` flag is reported as a plain note when it is off |
 | Voice input | **yes** - Web Speech where the WebView provides it; otherwise reported honestly |
 | Image-generation previews | **no** - `/api/experimental/generate/image` is not wired |
 
