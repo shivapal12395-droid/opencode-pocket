@@ -55,6 +55,29 @@ Termux is not, on stock Android. The only ways past it are outside this repo's
 control: a PIE build of OpenCode (not published), a device with an unlocked
 SELinux policy/root, or keeping Termux as the host.
 
+## Update — native launcher version (in progress)
+
+Play Store apps (AnyClaw, NativeCode, AndroPI) and the open-source Mobile
+Harness prove this is possible, so the earlier conclusion was too broad. Their
+technique is now being tried here:
+
+- `app/src/main/jniLibs/arm64-v8a/libproot.so` — Termux proot with DT_NEEDED
+  rewritten to short names (`libtt.so`, `libas.so`) so it runs from the native
+  library dir, which is executable even at targetSdk 36.
+- `app/src/main/cpp/launcher.cpp` + `NativeLauncher.kt` — a JNI fork/execve
+  bridge with an output pipe, replacing Java `ProcessBuilder`.
+- `android:extractNativeLibs="true"` so native libs are extracted and can be
+  executed by path.
+- `EmbeddedRuntime.kt` — download/verify/extract + launch, gated behind an
+  `PROBE_EMBEDDED` marker. Not enabled in normal use.
+
+**Device status:** with this setup, proot now *starts* via the JNI launcher from
+the native lib dir (the earlier "Permission denied" at host exec is gone), but
+the guest `execve("/usr/local/bin/opencode")` still reported Permission denied
+in the last run. A direct-musl-loader experiment was added but could not be run
+because the phone lost adb connectivity mid-test. Nothing is claimed to work
+yet; the default Termux path is unchanged and `targetSdk` was restored to 36.
+
 ## What stays supported
 
 - Browser/PWA path: Termux + Debian/proot + `start.sh`.

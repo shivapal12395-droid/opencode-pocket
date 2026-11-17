@@ -12,9 +12,25 @@ android {
         // Android 8.0 — the oldest version with reliable WebView + foreground
         // service behaviour for this app.
         minSdk = 26
+        // Kept at 36: the general (Termux) path is verified at this level and
+        // the bundled proot runs from the native library directory, which is
+        // executable regardless of targetSdk.
         targetSdk = 36
         versionCode = 1
         versionName = "1.0.0"
+
+        externalNativeBuild {
+            cmake {
+                abiFilters += "arm64-v8a"
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     buildTypes {
