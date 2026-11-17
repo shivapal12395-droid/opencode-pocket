@@ -3817,6 +3817,9 @@ function sessionActions(session) {
         <div class="sheet-list">
           ${sheetRow({ iconName: "edit", title: "Rename", attrs: "data-action=rename" })}
           ${sheetRow({ iconName: "search", title: "Find in conversation", sub: "Jump to a prompt or answer", attrs: "data-action=find" })}
+          ${pinnedIds().includes(session.id)
+            ? sheetRow({ iconName: "book", title: "Unpin chat", sub: "Remove from the sidebar's pinned list", attrs: "data-action=unpin" })
+            : sheetRow({ iconName: "book", title: "Pin chat", sub: "Keep it at the top of the sidebar", attrs: "data-action=pin" })}
           ${
             state.diff?.length
               ? sheetRow({ iconName: "diff", title: "Changes", sub: state.diff.length + " files touched here", attrs: "data-action=changes" })
@@ -3846,6 +3849,15 @@ function sessionActions(session) {
         if (action === "archive") return archiveSession(session, true);
         if (action === "unarchive") return archiveSession(session, false);
         if (action === "rename") return renameSession(session);
+        if (action === "pin" || action === "unpin") {
+          const ids = new Set(pinnedIds());
+          if (action === "pin") ids.add(session.id); else ids.delete(session.id);
+          store.set("pinnedSessions", [...ids]);
+          closeSheet();
+          renderSidebar();
+          toast(action === "pin" ? "Pinned" : "Unpinned");
+          return;
+        }
         if (action === "delete") return deleteSession(session);
         if (action === "info") return sessionInfo(session);
         if (action === "find") {

@@ -12,7 +12,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const report = [];
   const test = async (name, fn) => {
     try { const d = await fn(); report.push({ name, status: "PASS", detail: d || "" }); }
-    catch (e) { report.push({ name, status: "FAIL", detail: String(e.message).split("\n")[0].slice(0, 90) }); }
+    catch (e) { report.push({ name, status: "FAIL", detail: String(e.message).split("\n").slice(0,6).join(" ") }); }
   };
   const assert = (c, m) => { if (!c) throw new Error(m); };
 
@@ -101,6 +101,26 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     await sleep(250);
     assert(selected === "opencode|big-pickle", "selected=" + selected);
     return selected;
+  });
+
+  await test("Pin a chat into the sidebar", async () => {
+    const sheetOpen = await page.evaluate(() => document.querySelector("#sheet").classList.contains("open"));
+    if (sheetOpen) { await page.click("#sheet-close"); await sleep(500); }
+    const inChat = await page.evaluate(() => document.querySelector("#screen-chat").hidden === false);
+    await page.click(inChat ? "#chat-sidebar" : "#open-sidebar");
+    await sleep(400);
+    await page.click("#side-recents [data-side-session]");
+    await page.waitForSelector("#screen-chat:not([hidden])", { timeout: 8000 });
+    await sleep(600);
+    await page.click("#chat-menu");
+    await sleep(350);
+    await page.click('[data-action="pin"]');
+    await sleep(500);
+    await page.click("#chat-sidebar");
+    await sleep(400);
+    const n = await page.$$eval("#side-pinned [data-side-session]", (x) => x.length);
+    assert(n >= 1, "pinned=" + n);
+    return `${n} pinned`;
   });
 
   console.log("\n================ FEATURE TEST REPORT 3 ================");
