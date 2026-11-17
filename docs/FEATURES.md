@@ -53,7 +53,7 @@ below is judged by "can I do it from a phone with this UI".
 | Usage per answer | Tokens, cache, cost under the turn | **yes** |
 | Markdown | Code, tables, lists, copy buttons | **yes** |
 | Mermaid | Rendered, maximisable for pan/zoom | **no** |
-| Todo list | `todowrite` tool renders as a live checklist | **part** - shows as a generic tool card |
+| Todo list | `todowrite` tool renders as a live checklist | **yes** - progress panel at the top of the chat with a checkmark per step |
 | Subagent runs | Child session, report arrives back in the parent | **part** - child sessions appear in the list, no linkage in the transcript |
 
 ---
@@ -96,7 +96,7 @@ below is judged by "can I do it from a phone with this UI".
 | Instructions (`AGENTS.md`, globs, URLs) | Loaded automatically; per-session entries visible | **no** - `…/instructions/entries` unused |
 | References | Named external dirs/repos as context | **part** - `GET /api/reference` used for the mention/list only |
 | Providers + activation | List providers, models, auth state | **yes** (read) |
-| Provider login / accounts | `auth login`, credentials, switch account, OAuth | **no** - CLI only |
+| Provider login / accounts | `auth login`, credentials, switch account, OAuth | **yes** - Connections sheet: keys, OAuth start/finish, command login, credential activate/delete |
 | Web search | `websearch` tool + provider choice policy | server-side; **no** UI indicator |
 | Warming | Keep model cache warm | server-side (n/a) |
 | Formatters / LSP | Run after edits | server-side (n/a) |
@@ -131,8 +131,8 @@ below is judged by "can I do it from a phone with this UI".
 | Multi-device | Start on desktop, pick up on phone | **part** - same server, sessions shared |
 | Offline shell | n/a (desktop app is local) | **yes** (service worker) |
 | Installable app | Native desktop/mobile app | **part** - PWA today, native wrapper planned |
-| MCP servers | List, add/remove, connect/disconnect, OAuth sign-in, resources | **part** - list + status only |
-| MCP resources | `opencode_list_mcp_resources` / read | **no** |
+| MCP servers | List, add/remove, connect/disconnect, OAuth sign-in, resources | **yes** - list, connect, disconnect, remove |
+| MCP resources | `opencode_list_mcp_resources` / read | **part** - read-only catalog of resources and templates |
 | Plugins (server / TUI / GUI / RPC) | Install, list, update; GUI plugins add sidebar panels | **no** |
 | Integrations | `/connect` accounts (Console, providers, web search) | **no** |
 | Credentials | `auth export/import`, multiple accounts | **no** |
@@ -149,15 +149,17 @@ below is judged by "can I do it from a phone with this UI".
 
 ## 7. What the server offers that this UI does not touch
 
-The v2.3.0 server exposes **139 REST paths**. Pocket calls **49** of them (~35%).
+The v2.3.0 server exposes **139 REST paths**. Pocket calls **67** of them (~48%).
 
 Used: session CRUD, messages, prompt (steer and queue), command, interrupt, model,
 agent, view, diff, context, fork, compact, revert (stage/commit/clear), shell
 (in-session), skill list + activate, reference, mcp list, provider list,
 permission get/reply, saved permissions list/delete, worktree list, default
 model, stats, fs find/list/read, event stream, info, project, plus this
-release's additions: **forms (list, reply, cancel), inbox (list, re-aim,
-cancel), session export/import, vcs status/branch**.
+earlier additions: **forms, inbox, export/import, vcs status/branch**, and
+this release's: **integration list + key/OAuth/command connect flows,
+credential create/activate/rename/delete, MCP connect/disconnect/add/remove,
+MCP resource catalog**.
 
 Not used, grouped:
 
@@ -169,9 +171,8 @@ Not used, grouped:
 - **Execution surfaces**: `pty*`, `shell*`, `experimental/session/{id}/terminal`,
   `experimental/persistent-pty*`.
 - **Extensibility**: `plugin`, `plugin/gui`, `plugin/check`, `plugin/update`,
-  `rpc/{id}/{method}`, `integration*`, `credential*`, `experimental/mcp/{server}`
-  (PUT/DELETE), `.../mcp/{server}/connect|disconnect`, `mcp/resource`,
-  `experimental/client-mcp`.
+  `rpc/{id}/{method}`, `experimental/client-mcp` (the server-side MCP
+  register and the `integration/wellknown` hint remain untouched).
 - **Generation / media**: `experimental/generate`, `/image`, `/text`,
   `/decisions`, `experimental/artifacts*`, `experimental/media/{hash}`.
 - **Accounts / limits**: `experimental/usage/limits`, `websearch`,
@@ -191,33 +192,34 @@ archived|unarchived|moved|metadata.updated`), `session.model.selected|agent.sele
 `form.created|replied|cancelled`, and every `session.inbox.*` event
 (`enqueued`, `updated`, `delivered`, `cancelled`) which refreshes the queue strip.
 
+`session.todo.updated` now drives a progress panel at the top of the chat,
+and `integration.updated` / `credential.switched` are observed by reopening
+the Connections sheet.
+
 Still unhandled:
 
 1. `session.instructions.updated` - instruction changes never refresh.
-2. `session.todo.updated` - the checklist only appears inside a tool card.
-3. Provider/agent catalog changes while the app is open.
+2. Provider/agent catalog changes while the app is open.
 
 ## 9. Suggested order of work
 
-**Landed in this release** (see the git log): forms, inbox/queue and delivery
+**Landed across the last four releases**: forms, inbox/queue and delivery
 semantics, activity timeline with verbosity, message actions, artifacts (code,
 HTML, document, diagram, diff), the preferences studio, find-in-conversation,
 unread and failed-run dots, session export/import, branch chip, retry and
-step-failed events, and the markdown engine rewrite.
+step-failed events, the markdown engine rewrite, provider authentication,
+MCP write paths and the task checklist.
 
 **P1 - daily use on a phone**
 
-1. Provider login (`/api/integration*`, `/api/credential*`) instead of dropping to a terminal.
-2. MCP: connect/disconnect a server, sign in, list resources.
-3. A tab switcher for parallel sessions (the server already supports it).
+1. A tab switcher for parallel sessions (the server already supports it).
+2. Terminal pane (PTY) and background shells.
 
 **P2 - parity polish**
 
-4. Todo checklist rendering (`session.todo.updated`).
-5. Terminal pane (PTY) and background shells.
-6. Config sheet (default model, permissions editor, instructions view).
-7. GUI plugin panels, image-generation previews.
-8. Native app shell: foreground service + boot receiver (see README).
+3. Config sheet (default model, permissions editor, instructions view).
+4. GUI plugin panels, image-generation previews.
+5. Native app shell: foreground service + boot receiver (see README).
 
 ## Sources
 

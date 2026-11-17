@@ -31,6 +31,10 @@ No build step. No backend of its own. One static app that talks straight to `ope
 | --- | --- | --- |
 | <img src="docs/artifact-code.png" width="240" alt="A generated file opened full screen with line numbers" /> | <img src="docs/artifact-html.png" width="240" alt="A generated page running in a sandboxed preview" /> | <img src="docs/preferences.png" width="240" alt="Preferences: theme, accent, reading mode" /> |
 
+| Connections | MCP controls | Task progress |
+| --- | --- | --- |
+| <img src="docs/connections.png" width="240" alt="Provider keys and OAuth sign-in" /> | <img src="docs/mcp-controls.png" width="240" alt="Connect, disconnect and remove MCP servers" /> | <img src="docs/task-progress.png" width="240" alt="A live checklist at the top of a long task" /> |
+
 | Activity timeline | Artifacts inline |
 | --- | --- |
 | <img src="docs/chat-activity.png" width="240" alt="A run of tool calls folded into one expandable row" /> | <img src="docs/chat-artifacts.png" width="240" alt="Artifact cards under a finished answer" /> |
@@ -52,6 +56,9 @@ No phone, no server, no account: **[open the demo](https://shivapal12395-droid.g
 - **Artifacts** — a generated file, page, diagram or long document becomes a card in the transcript that opens full screen: preview and code tabs, line numbers, wrap, copy, save. HTML runs in a sandboxed frame with no access to this app or its password.
 - **Questions from the agent** — the `question` tool arrives as a form with choices, free text, multiselect and conditional fields; answering it unblocks the turn.
 - **Queue or steer** — while a turn runs, the composer picks between joining it and waiting; queued prompts show above the composer and can be cancelled or re-aimed.
+- **Provider login** — connect API keys, start and finish OAuth, or run a command login from the Connections sheet. Credentials stay on the server.
+- **MCP controls** — connect, disconnect and remove servers, and browse the resources they expose.
+- **Task progress** — a live checklist at the top of a long task, driven by the server's todo events.
 - **Tool cards** — expand any call for its input, output and exit code; a failed tool shows the error, not just a red dot.
 - **Clear failures** — a rejected turn shows the provider's reason, a next step, and how long to wait. Retries appear as they happen.
 - **Rewind** — undo the last turn, restoring the files it changed, then keep or drop it.

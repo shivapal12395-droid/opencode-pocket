@@ -86,6 +86,7 @@ const state = {
   delivery: store.get("delivery", "steer"),
   // placeholders so a 1.x service worker cannot call missing hooks
   artifacts: [],
+  todos: [],
   prefs: getPrefs(),
   artifacts: [],
   artifact: null,
@@ -135,6 +136,7 @@ function cacheDom() {
   el.attachStrip = $("#attach-strip");
   el.composerHint = $("#composer-hint");
   el.jumpLatest = $("#jump-latest");
+  el.todoPanel = $("#todo-panel");
   el.inboxBar = $("#inbox-bar");
   el.deliveryToggle = $("#delivery-toggle");
   el.artifact = $("#artifact");
@@ -564,6 +566,11 @@ async function openSession(sessionOrId) {
 
   state.revert = session.revert ?? null;
   state.diff = [];
+  state.forms = [];
+  state.inbox = [];
+  state.todos = [];
+  renderTodos();
+  renderInbox();
   resetMessageRender();
   updateRevertBanner();
   updateDiffChip();
@@ -1443,6 +1450,13 @@ function handleEvent(event) {
       state.lastAssistantId = null;
       scheduleMessageRefresh(250);
       break;
+    case "session.todo.updated": {
+      // The checklist is published whole, not incrementally. Keep the last list
+      // per session so switching away and back restores it.
+      state.todos = Array.isArray(data.todos) ? data.todos : [];
+      renderTodos();
+      break;
+    }
     case "session.retry.scheduled": {
       // The provider hiccuped and the server is waiting to try again. Showing it
       // prevents a silent pause that looks like a hang.
@@ -2634,6 +2648,341 @@ function openSavedPermissionsSheet() {
   });
 }
 
+/* ------------------------------------------------------- account connections
+ * The server owns credentials; Pocket only shows what it can connect and posts
+ * the answer. Nothing here stores a key, and nothing here is sent anywhere but
+ * the local server. The OAuth attempt is a two-step dance: start it, open the
+ * URL in the browser, then confirm with the pasted code.
+ */
+
+const methodLabel = (m) => {
+  if (m.label) return m.label;
+  if (m.type === "key") return "API key";
+  if (m.type === "oauth") return "Sign in with a browser";
+  if (m.type === "command") return "Connect with a command";
+  if (m.type === "env") return "Uses environment variables";
+  if (m.type === "external") return "Connect externally";
+  return m.type ?? "Connect";
+};
+
+const connectedLabel = (conn) => {
+  if (!conn) return "";
+  if (conn.type === "credential") return "Connected";
+  if (conn.type === "env") return "From the host environment";
+  return conn.type ?? "Connected";
+};
+
+async function openAuthSheet() {
+  openSheet({
+    kind: "auth",
+    title: "Connections",
+    body: async (root) => {
+      root.innerHTML = '<p class="sheet-note">Loading providers and saved credentials…</p>';
+      let list = [];
+      let creds = [];
+      try {
+        [list, creds] = await Promise.all([state.api.integrations(), state.api.credentials()]);
+      } catch (err) {
+        root.innerHTML = '<p class="sheet-note">' + escapeHtml(err.message || "Could not load connections") + "</p>";
+        return;
+      }
+      if (!list.length) {
+        root.innerHTML = '<p class="sheet-note">This server reports no connectable integrations. Its providers may use keys from the host environment.</p>';
+        return;
+      }
+
+      const credById = new Map(creds.map((c) => [c.id, c]));
+      const byIntegration = new Map();
+      for (const c of creds) {
+        const k = c.integrationID;
+        if (!byIntegration.has(k)) byIntegration.set(k, []);
+        byIntegration.get(k).push(c);
+      }
+
+      const paint = () => {
+        root.innerHTML =
+          '<p class="sheet-note">Sign in to use more models. Keys stay on your server; Pocket never stores them.</p><div class="sheet-list">' +
+          list
+            .map((it) => {
+              const conns = it.connections ?? [];
+              const saved = byIntegration.get(it.id) ?? [];
+              const status = conns.length ? conns.map(connectedLabel).join(", ") : "Not connected";
+              const methods = (it.methods ?? [])
+                .filter((m) => ["key", "oauth", "command", "external"].includes(m.type))
+                .map(
+                  (m, i) =>
+                    `<button class="sheet-item auth-method" data-auth-method="${escapeHtml(it.id)}" data-method="${i}">` +
+                    `<span class="si-icon">${icon(m.type === "oauth" ? "shield" : m.type === "command" ? "terminal" : "key")}</span>` +
+                    `<span class="si-text"><span class="si-title">${escapeHtml(methodLabel(m))}</span></span>` +
+                    `<span class="auth-go">Connect</span></button>`
+                )
+                .join("");
+              const savedRows = saved
+                .map(
+                  (c) =>
+                    `<div class="auth-cred"><span class="si-text">` +
+                    `<span class="si-title">${escapeHtml(c.label || "Credential")}${c.active ? ' <span class="auth-active">active</span>' : ""}</span>` +
+                    `<span class="si-sub">${escapeHtml(c.value?.type ?? "")}</span></span>` +
+                    `<span class="auth-cred-actions">` +
+                    (c.active
+                      ? ""
+                      : `<button data-cred-activate="${escapeHtml(c.id)}" aria-label="Activate">${icon("check")}</button>`) +
+                    `<button data-cred-delete="${escapeHtml(c.id)}" aria-label="Delete">${icon("trash")}</button>` +
+                    `</span></div>`
+                )
+                .join("");
+              return (
+                `<div class="auth-provider"><div class="auth-provider-head">` +
+                `<span class="si-text"><span class="si-title">${escapeHtml(it.name || it.id)}</span>` +
+                `<span class="si-sub">${escapeHtml(status)}</span></span></div>` +
+                methods +
+                savedRows +
+                `</div>`
+              );
+            })
+            .join("") +
+          "</div>";
+
+        root.querySelectorAll("[data-auth-method]").forEach((btn) => {
+          btn.onclick = () => {
+            const it = list.find((x) => x.id === btn.dataset.authMethod);
+            const m = it?.methods?.[Number(btn.dataset.method)];
+            if (it && m) startAuthMethod(it, m, paint);
+          };
+        });
+        root.querySelectorAll("[data-cred-activate]").forEach((btn) => {
+          btn.onclick = async () => {
+            try {
+              await state.api.activateCredential(btn.dataset.credActivate);
+              toast("Credential activated");
+              paint();
+            } catch (err) {
+              handleError(err, "Could not activate");
+            }
+          };
+        });
+        root.querySelectorAll("[data-cred-delete]").forEach((btn) => {
+          btn.onclick = async () => {
+            try {
+              await state.api.deleteCredential(btn.dataset.credDelete);
+              creds = creds.filter((c) => c.id !== btn.dataset.credDelete);
+              byIntegration.set(
+                btn.dataset.credDelete,
+                (byIntegration.get(btn.dataset.credDelete) ?? []).filter((c) => c.id !== btn.dataset.credDelete)
+              );
+              // rebuild the grouping from the remaining credentials
+              byIntegration.clear();
+              for (const c of creds) {
+                if (!byIntegration.has(c.integrationID)) byIntegration.set(c.integrationID, []);
+                byIntegration.get(c.integrationID).push(c);
+              }
+              toast("Credential removed");
+              paint();
+            } catch (err) {
+              handleError(err, "Could not remove");
+            }
+          };
+        });
+      };
+
+      const startAuthMethod = async (integration, method, done) => {
+        if (method.type === "key") {
+          const form = method.form ?? [];
+          const fields = form.map((f) => ({
+            key: f.key,
+            label: f.title || f.key,
+            placeholder: f.placeholder || "",
+            secret: true,
+          }));
+          // Most key integrations need one field; if the server sends no form,
+          // fall back to a plain key input.
+          if (!fields.length) fields.push({ key: "key", label: "API key", placeholder: "sk-…", secret: true });
+          openSheet({
+            kind: "key",
+            title: `Connect ${integration.name || integration.id}`,
+            body: (r) => {
+              r.innerHTML =
+                `<p class="sheet-note">The key is sent only to your local OpenCode server, which stores it. Pocket does not keep a copy.</p>` +
+                fields
+                  .map(
+                    (f) =>
+                      `<label class="field"><span class="field-label">${escapeHtml(f.label)}</span>` +
+                      `<input class="input" data-key-field="${escapeHtml(f.key)}" type="password" placeholder="${escapeHtml(f.placeholder)}" autocomplete="off" spellcheck="false"></label>`
+                  )
+                  .join("") +
+                `<label class="field"><span class="field-label">Label (optional)</span><input class="input" id="key-label" placeholder="e.g. personal"></label>` +
+                `<div class="permission-actions"><button class="btn btn-ghost" data-cancel>Cancel</button>` +
+                `<button class="btn btn-primary" data-save>Connect</button></div>`;
+              r.querySelectorAll("[data-cancel]").forEach((b) => (b.onclick = () => closeSheet()));
+              r.querySelector("[data-save]").onclick = async () => {
+                const values = {};
+                for (const f of fields) {
+                  const v = r.querySelector(`[data-key-field="${CSS.escape(f.key)}"]`)?.value?.trim();
+                  if (v) values[f.key] = v;
+                }
+                const key = values.key ?? Object.values(values)[0];
+                if (!key) {
+                  toast("Enter a key");
+                  return;
+                }
+                const label = r.querySelector("#key-label")?.value?.trim() || null;
+                try {
+                  await state.api.connectKey(integration.id, key, { label, answer: Object.keys(values).length > 1 ? values : null });
+                  toast("Connected");
+                  closeSheet();
+                  setTimeout(() => openAuthSheet(), 240);
+                } catch (err) {
+                  handleError(err, "Could not connect");
+                }
+              };
+            },
+          });
+          return;
+        }
+
+        if (method.type === "oauth") {
+          try {
+            const attempt = await state.api.connectOAuth(integration.id, method.id, {});
+            const data = attempt?.data ?? attempt ?? {};
+            const url = data.url;
+            const aid = data.attemptID;
+            if (!url || !aid) throw new Error("The server did not return a sign-in URL");
+            window.open(url, "_blank", "noopener,noreferrer");
+            openSheet({
+              kind: "oauth",
+              title: `Sign in to ${integration.name || integration.id}`,
+              body: (r) => {
+                r.innerHTML =
+                  `<p class="sheet-note">${escapeHtml(data.instructions || "Open the browser window, sign in, then paste the code here.")}</p>` +
+                  `<label class="field"><span class="field-label">Code from the browser</span>` +
+                  `<input class="input" id="oauth-code" autocomplete="off" spellcheck="false" placeholder="Paste the code"></label>` +
+                  `<div class="permission-actions"><button class="btn btn-ghost" data-cancel>Cancel</button>` +
+                  `<button class="btn btn-primary" data-done>Finish</button></div>`;
+                r.querySelectorAll("[data-cancel]").forEach((b) => (b.onclick = () => {
+                  state.api.cancelOAuth(integration.id, aid).catch(() => {});
+                  closeSheet();
+                }));
+                r.querySelector("[data-done]").onclick = async () => {
+                  const code = r.querySelector("#oauth-code").value.trim();
+                  try {
+                    await state.api.completeOAuth(integration.id, aid, code || null);
+                    toast("Signed in");
+                    closeSheet();
+                    setTimeout(() => openAuthSheet(), 240);
+                  } catch (err) {
+                    handleError(err, "Could not finish sign-in");
+                  }
+                };
+              },
+            });
+          } catch (err) {
+            handleError(err, "Could not start sign-in");
+          }
+          return;
+        }
+
+        if (method.type === "command") {
+          try {
+            const res = await state.api.connectCommand(integration.id, method.id, {});
+            const data = res?.data ?? res ?? {};
+            toast(data.instructions || "Run the command on your server to connect");
+            done();
+          } catch (err) {
+            handleError(err, "Could not start");
+          }
+          return;
+        }
+
+        if (method.type === "external") {
+          toast("This provider is configured outside Pocket, on the host.");
+        }
+      };
+
+      paint();
+    },
+  });
+}
+
+/* --------------------------------------------------------------- MCP actions
+ * The existing sheet only listed servers. These controls use the real write
+ * routes, and the resource catalog is read-only.
+ */
+
+async function mcpAction(server, action) {
+  try {
+    if (action === "connect") {
+      toast("Connecting to " + server + "…");
+      await state.api.mcpConnect(server);
+      toast("Connected to " + server);
+    } else if (action === "disconnect") {
+      await state.api.mcpDisconnect(server);
+      toast("Disconnected from " + server);
+    } else if (action === "remove") {
+      await state.api.mcpRemove(server);
+      toast("Removed " + server);
+    }
+    openMcpSheet();
+  } catch (err) {
+    handleError(err, "Could not " + action + " " + server);
+  }
+}
+
+async function openMcpResources() {
+  openSheet({
+    kind: "mcp-resources",
+    title: "MCP resources",
+    body: async (root) => {
+      root.innerHTML = '<p class="sheet-note">Loading…</p>';
+      try {
+        const cat = await state.api.mcpResources();
+        const items = [...(cat.resources ?? []), ...(cat.templates ?? [])];
+        root.innerHTML = items.length
+          ? '<div class="sheet-list">' +
+            items
+              .map(
+                (r) =>
+                  `<div class="sheet-item"><span class="si-icon">${icon("book")}</span>` +
+                  `<span class="si-text"><span class="si-title">${escapeHtml(r.name || r.uri || "Resource")}</span>` +
+                  `<span class="si-sub">${escapeHtml(r.uri || r.uriTemplate || "")}</span></span></div>`
+              )
+              .join("") +
+            "</div>"
+          : '<p class="sheet-note">No resources are exposed by the connected servers.</p>';
+      } catch (err) {
+        root.innerHTML = '<p class="sheet-note">' + escapeHtml(err.message || "Could not load resources") + "</p>";
+      }
+    },
+  });
+}
+
+/* ------------------------------------------------------------------- todos
+ * The server publishes a checklist for longer tasks. Keeping it at the top of
+ * the transcript makes progress legible without reading every tool call.
+ */
+
+function renderTodos() {
+  if (!el.todoPanel) return;
+  const items = state.todos ?? [];
+  el.todoPanel.hidden = !items.length;
+  if (!items.length) {
+    el.todoPanel.innerHTML = "";
+    return;
+  }
+  const done = items.filter((t) => /complete|done/i.test(t.status ?? "")).length;
+  el.todoPanel.innerHTML =
+    `<div class="todo-head">Task progress <span>${done}/${items.length}</span></div>` +
+    `<div class="todo-list">` +
+    items
+      .map((t) => {
+        const stateName = String(t.status ?? "pending").toLowerCase();
+        const cls = /complete|done/.test(stateName) ? "done" : /progress|running/.test(stateName) ? "active" : "";
+        const mark = cls === "done" ? "✓" : cls === "active" ? "◐" : "";
+        return `<div class="todo-row ${cls}"><span class="todo-mark">${mark}</span><span>${escapeHtml(t.content || "")}</span></div>`;
+      })
+      .join("") +
+    `</div>`;
+}
+
 function openMcpSheet() {
   openSheet({
     kind: "mcp",
@@ -2652,19 +3001,33 @@ function openMcpSheet() {
         return;
       }
       root.innerHTML =
-        '<p class="sheet-note">' + servers.length + " servers configured.</p><div class=\"sheet-list\">" +
+        '<p class="sheet-note">Connect, disconnect or remove a server. The server keeps the config.</p><div class="sheet-list">' +
         servers
           .map((s) => {
+            const name = s.name || s.title;
             const status = s.status?.status ?? "unknown";
             const detail = s.status?.error ? String(s.status.error).slice(0, 100) : status;
+            const connected = /^(connected|active|running|ready)$/i.test(status);
             return (
-              '<div class="sheet-item"><span class="dot-status" data-s="' + escapeHtml(status) + '"></span>' +
+              '<div class="mcp-row"><div class="sheet-item"><span class="dot-status" data-s="' + escapeHtml(status) + '"></span>' +
               '<span class="si-text"><span class="si-title">' + escapeHtml(s.title || s.name) + "</span>" +
-              '<span class="si-sub">' + escapeHtml(detail) + "</span></span></div>"
+              '<span class="si-sub">' + escapeHtml(detail) + "</span></span></div>" +
+              '<div class="mcp-actions">' +
+              (connected
+                ? '<button data-mcp="disconnect" data-server="' + escapeHtml(name) + '">Disconnect</button>'
+                : '<button data-mcp="connect" data-server="' + escapeHtml(name) + '">Connect</button>') +
+              '<button data-mcp="remove" data-server="' + escapeHtml(name) + '">Remove</button>' +
+              "</div></div>"
             );
           })
           .join("") +
-        "</div>";
+        "</div>" +
+        '<div class="prefs-foot"><button class="btn btn-ghost" data-mcp-resources>View resources</button></div>';
+      root.addEventListener("click", (e) => {
+        const btn = e.target.closest("[data-mcp]");
+        if (btn) return mcpAction(btn.dataset.server, btn.dataset.mcp);
+        if (e.target.closest("[data-mcp-resources]")) return openMcpResources();
+      });
     },
   });
 }
@@ -3464,6 +3827,7 @@ function openSettings() {
           ${state.info ? `<div class="setting-row"><div class="setting-text"><div class="setting-title">Version</div><div class="setting-sub">${escapeHtml(serverLabel)}</div></div></div>` : ""}
           ${sheetSettingRow("download", "Import a session", "From a JSON export", "import-session")}
           ${sheetSettingRow("shield", "Permissions", "Rules that skip the approval sheet", "saved-permissions")}
+          ${sheetSettingRow("key", "Connections", "Provider logins and saved keys", "open-auth")}
           ${sheetSettingRow("plug", "MCP servers", "Tools connected to this workspace", "open-mcp")}
           ${sheetSettingRow("cpu", "Providers", "Model providers this server reaches", "open-providers")}
           ${sheetSettingRow("book", "Skills", "Instructions available to the agent", "open-skills")}
@@ -3518,6 +3882,10 @@ function openSettings() {
         }
         if (e.target.closest("#saved-permissions")) {
           openSavedPermissionsSheet();
+          return;
+        }
+        if (e.target.closest("#open-auth")) {
+          openAuthSheet();
           return;
         }
         if (e.target.closest("#open-mcp")) {

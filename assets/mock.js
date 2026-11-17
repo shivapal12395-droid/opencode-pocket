@@ -777,6 +777,18 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
   async viewSession(id) {
     const s = this.sessionList.find((x) => x.id === id);
     if (s) s.time.viewed = now();
+    // A long task keeps a checklist; publish it once when the session opens.
+    if (id === "ses_demo8") {
+      this.later(() => this.emit("session.todo.updated", {
+        sessionID: id,
+        todos: [
+          { content: "Read the media bucket interface", status: "complete" },
+          { content: "Implement content-addressed upload", status: "complete" },
+          { content: "Sketch the inbox flow", status: "in_progress" },
+          { content: "Add a regression test", status: "pending" },
+        ],
+      }), 700);
+    }
     return {};
   }
 
@@ -801,12 +813,136 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
     return [];
   }
 
-  async mcpServers() {
-    return [{ name: "blender-mcp", title: "Blender", status: { status: "connected" } }, { name: "playwright", title: "Playwright", status: { status: "connected" } }, { name: "tinyfish", title: "TinyFish", status: { status: "connected" } }, { name: "audio", title: "Audio", status: { status: "failed", error: "MCP server process exited with code 2" } }, { name: "godot", title: "Godot", status: { status: "disabled" } }];
+  async mcpServers() {    this.mcpServersCache = this.mcpServersCache ?? [
+      { name: "blender-mcp", title: "Blender", status: { status: "connected" } }, { name: "playwright", title: "Playwright", status: { status: "connected" } }, { name: "tinyfish", title: "TinyFish", status: { status: "connected" } }, { name: "audio", title: "Audio", status: { status: "failed", error: "MCP server process exited with code 2" } }, { name: "godot", title: "Godot", status: { status: "disabled" } }];
+    return clone(this.mcpServersCache);
   }
 
   async providers() {
     return [{ id: "opencode", name: "OpenCode", activation: "enabled" }, { id: "anthropic", name: "Anthropic", activation: "auto" }, { id: "openai", name: "OpenAI", activation: "auto" }, { id: "google", name: "Google", activation: "auto" }, { id: "ollama", name: "Ollama", activation: "disabled" }];
+  }
+
+  /* ---- provider connections and credentials (demo doubles) ---- */
+
+  async integrations() {
+    return [
+      {
+        id: "anthropic",
+        name: "Anthropic",
+        methods: [
+          { type: "oauth", id: "claude", label: "Sign in with Claude" },
+          { type: "key", label: "API key", form: [{ key: "key", title: "API key", placeholder: "sk-ant-…" }] },
+        ],
+        connections: [],
+      },
+      {
+        id: "openai",
+        name: "OpenAI",
+        methods: [
+          { type: "oauth", id: "chatgpt", label: "Sign in with ChatGPT" },
+          { type: "key", label: "API key", form: [{ key: "key", title: "API key", placeholder: "sk-…" }] },
+        ],
+        connections: [{ type: "credential", credentialID: "cred_demo1" }],
+      },
+      {
+        id: "google",
+        name: "Google",
+        methods: [{ type: "key", label: "API key", form: [{ key: "key", title: "API key" }] }],
+        connections: [],
+      },
+      {
+        id: "ollama",
+        name: "Ollama",
+        methods: [{ type: "env", names: ["OLLAMA_HOST"] }],
+        connections: [{ type: "env", name: "OLLAMA_HOST" }],
+      },
+    ];
+  }
+
+  async credentials() {
+    return [
+      {
+        id: "cred_demo1",
+        integrationID: "openai",
+        label: "Personal",
+        active: true,
+        value: { type: "key", key: "sk-demo" },
+      },
+    ];
+  }
+
+  async connectKey(id, key) {
+    this.toast?.("Connected " + id);
+    return { ok: true };
+  }
+
+  async connectOAuth(id, methodID) {
+    return {
+      data: {
+        attemptID: "attempt_" + this.seq++,
+        url: "https://example.invalid/oauth/demo",
+        instructions: "Demo mode: no real browser sign-in happens. Any code finishes the flow.",
+        mode: "auto",
+        paste: true,
+        time: { created: now(), expires: now() + 10 * min },
+      },
+    };
+  }
+
+  async completeOAuth() {
+    return { ok: true };
+  }
+
+  async cancelOAuth() {
+    return { ok: true };
+  }
+
+  async connectCommand(id, methodID) {
+    return { data: { attemptID: "cmd_" + this.seq++, instructions: "Run `opencode auth login` in Termux." } };
+  }
+
+  async activateCredential(id) {
+    return { ok: true };
+  }
+
+  async deleteCredential(id) {
+    return { ok: true };
+  }
+
+  async oauthAttempt() {
+    return { data: { status: "pending", time: { created: now(), expires: now() + 10 * min } } };
+  }
+
+  async commandAttempt() {
+    return { data: { attemptID: "cmd_demo", time: { created: now(), expires: now() + 10 * min } } };
+  }
+
+  /* ---- MCP write paths ---- */
+
+  async mcpConnect(server) {
+    const s = this.mcpServersCache?.find((x) => x.name === server);
+    if (s) s.status = { status: "connected" };
+    return { ok: true };
+  }
+
+  async mcpDisconnect(server) {
+    const s = this.mcpServersCache?.find((x) => x.name === server);
+    if (s) s.status = { status: "disconnected" };
+    return { ok: true };
+  }
+
+  async mcpRemove(server) {
+    return { ok: true };
+  }
+
+  async mcpResources() {
+    return {
+      resources: [
+        { uri: "file:///project/README.md", name: "README.md" },
+        { uri: "file:///project/AGENTS.md", name: "AGENTS.md" },
+      ],
+      templates: [{ uriTemplate: "file:///project/{path}", name: "Project files" }],
+    };
   }
 
   async savedPermissions() {

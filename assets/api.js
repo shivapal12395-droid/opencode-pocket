@@ -416,6 +416,106 @@ export class Api {
     return this.request("DELETE", `/api/session/${sessionID}/inbox/${inboxID}`);
   }
 
+  /* ------------------------------------------------ provider authentication
+   * The server already knows how to talk to each provider; Pocket only needs to
+   * show the methods it offers and post the result. Keys never leave this device
+   * except in the request body to the local server, and are never stored in the
+   * client — the server owns credentials.
+   *
+   *   GET    /api/integration                          methods + connections
+   *   POST   /api/integration/{id}/connect/key         { key, label, answer }
+   *   POST   /api/integration/{id}/connect/oauth       { methodID, label, answer }
+   *   GET    /api/integration/{id}/connect/oauth/{a}   attempt status
+   *   POST   /api/integration/{id}/connect/oauth/{a}/complete  { code }
+   *   DELETE /api/integration/{id}/connect/oauth/{a}   cancel
+   *   POST   /api/integration/{id}/connect/command     { methodID, label }
+   *   GET    /api/integration/{id}/connect/command/{a}  attempt status
+   *   GET    /api/credential                            saved credentials
+   *   POST   /api/credential                            { integrationID, value, ... }
+   *   PATCH  /api/credential/{id}                       { label }
+   *   DELETE /api/credential/{id}
+   *   POST   /api/credential/{id}/activate
+   */
+
+  async integrations() {
+    const res = await this.request("GET", "/api/integration", undefined, { timeout: 20000 });
+    return res?.data ?? [];
+  }
+
+  connectKey(id, key, { label, answer } = {}) {
+    return this.request("POST", `/api/integration/${id}/connect/key`, { key, label, answer });
+  }
+
+  connectOAuth(id, methodID, { label, answer } = {}) {
+    return this.request("POST", `/api/integration/${id}/connect/oauth`, { methodID, label, answer });
+  }
+
+  oauthAttempt(id, attemptID) {
+    return this.request("GET", `/api/integration/${id}/connect/oauth/${attemptID}`, undefined, { timeout: 15000 });
+  }
+
+  completeOAuth(id, attemptID, code) {
+    return this.request("POST", `/api/integration/${id}/connect/oauth/${attemptID}/complete`, { code });
+  }
+
+  cancelOAuth(id, attemptID) {
+    return this.request("DELETE", `/api/integration/${id}/connect/oauth/${attemptID}`);
+  }
+
+  connectCommand(id, methodID, { label } = {}) {
+    return this.request("POST", `/api/integration/${id}/connect/command`, { methodID, label });
+  }
+
+  commandAttempt(id, attemptID) {
+    return this.request("GET", `/api/integration/${id}/connect/command/${attemptID}`, undefined, { timeout: 15000 });
+  }
+
+  async credentials() {
+    const res = await this.request("GET", "/api/credential", undefined, { timeout: 20000 });
+    return res?.data ?? [];
+  }
+
+  createCredential(input) {
+    return this.request("POST", "/api/credential", input);
+  }
+
+  updateCredential(id, label) {
+    return this.request("PATCH", `/api/credential/${id}`, { label });
+  }
+
+  deleteCredential(id) {
+    return this.request("DELETE", `/api/credential/${id}`);
+  }
+
+  activateCredential(id) {
+    return this.request("POST", `/api/credential/${id}/activate`);
+  }
+
+  /* ------------------------------------------------------------------- MCP
+   * Listing already exists; these are the write paths. A server name is a path
+   * segment, so it must be encoded once, not twice.
+   */
+  mcpConnect(server) {
+    return this.request("POST", `/api/experimental/mcp/${encodeURIComponent(server)}/connect`, {}, { timeout: 60000 });
+  }
+
+  mcpDisconnect(server) {
+    return this.request("POST", `/api/experimental/mcp/${encodeURIComponent(server)}/disconnect`, {}, { timeout: 30000 });
+  }
+
+  mcpAdd(server, config) {
+    return this.request("PUT", `/api/experimental/mcp/${encodeURIComponent(server)}`, { config });
+  }
+
+  mcpRemove(server) {
+    return this.request("DELETE", `/api/experimental/mcp/${encodeURIComponent(server)}`);
+  }
+
+  async mcpResources() {
+    const res = await this.request("GET", "/api/mcp/resource", undefined, { timeout: 20000 });
+    return res?.data ?? { resources: [], templates: [] };
+  }
+
   /* ------------------------------------------------------- session plumbing */
 
   exportSession(sessionID, { sanitize = false } = {}) {
