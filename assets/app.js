@@ -3900,6 +3900,15 @@ function openSettings() {
                 </div>`
           }
           ${state.info ? `<div class="setting-row"><div class="setting-text"><div class="setting-title">Version</div><div class="setting-sub">${escapeHtml(serverLabel)}</div></div></div>` : ""}
+          ${
+            window.PocketNative?.runtimeMode
+              ? `<div class="setting-row" id="runtime-mode-row">
+                   <div class="setting-text"><div class="setting-title">Runtime</div>
+                     <div class="setting-sub">Built-in runs OpenCode inside the app · Termux uses your existing setup</div></div>
+                   <button class="btn btn-ghost" id="runtime-mode" style="height:38px;padding:0 12px;font-size:12.5px"></button>
+                 </div>`
+              : ""
+          }
           ${sheetSettingRow("download", "Import a session", "From a JSON export", "import-session")}
           ${sheetSettingRow("shield", "Permissions", "Rules that skip the approval sheet", "saved-permissions")}
           ${sheetSettingRow("key", "Connections", "Provider logins and saved keys", "open-auth")}
@@ -3925,6 +3934,12 @@ function openSettings() {
           </div>
         </div>`;
 
+      const modeBtn = $("#runtime-mode", root);
+      if (modeBtn) {
+        const mode = window.PocketNative.runtimeMode();
+        modeBtn.textContent = mode === "embedded" ? "Built-in" : "Termux";
+      }
+
       root.addEventListener("click", async (e) => {
         const themeBtn = e.target.closest("#theme-seg button");
         if (themeBtn) {
@@ -3938,6 +3953,12 @@ function openSettings() {
           deferredInstall?.prompt?.();
           deferredInstall = null;
           closeSheet();
+        }
+        if (e.target.closest("#runtime-mode")) {
+          const next = window.PocketNative.runtimeMode() === "embedded" ? "termux" : "embedded";
+          window.PocketNative.setRuntimeMode(next);
+          e.target.closest("#runtime-mode").textContent = next === "embedded" ? "Built-in" : "Termux";
+          toast(next === "embedded" ? "Built-in runtime · reopen the app" : "Termux runtime · reopen the app");
         }
         if (e.target.closest("#edit-conn")) {
           closeSheet();

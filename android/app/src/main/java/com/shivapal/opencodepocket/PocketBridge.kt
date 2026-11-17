@@ -156,4 +156,23 @@ class PocketBridge(private val activity: MainActivity) {
 
     @android.webkit.JavascriptInterface
     fun serviceRunning(): Boolean = OpencodeService.isRunning
+
+    @android.webkit.JavascriptInterface
+    fun runtimeMode(): String =
+        prefs.getString("runtimeMode", "embedded") ?: "embedded"
+
+    @android.webkit.JavascriptInterface
+    fun setRuntimeMode(mode: String) {
+        if (mode != "embedded" && mode != "termux") return
+        prefs.edit().putString("runtimeMode", mode).apply()
+        if (mode == "embedded") {
+            // A fresh daemon must not inherit sessions/config from the other
+            // runtime; MainActivity rebuilds the local store on next launch.
+            prefs.edit().putString("lastRuntimeMode", "").apply()
+            val dir = java.io.File(activity.filesDir, "opencode-home/.local/share/opencode")
+            listOf("opencode.db", "opencode.db-wal", "opencode.db-shm").forEach {
+                java.io.File(dir, it).delete()
+            }
+        }
+    }
 }

@@ -203,25 +203,28 @@ on every server restart — paste the new one, or use a fresh `oc pair` link.
 ### Native Android app (optional)
 
 The same web client also ships as a real Kotlin app in [`android/`](android/README.md).
-It is a WebView over the identical vanilla UI, not a second implementation. You
-still need steps 1–2 above (Termux + OpenCode in Debian) — the APK starts the
-daemon itself and serves the UI, so there is no Chrome and no `start.sh` UI
-server in this path:
+It is a WebView over the identical vanilla UI, not a second implementation.
+**Install the APK and open it** — on first launch the app downloads and verifies
+a small OpenCode runtime, starts its own daemon at `127.0.0.1:4098`, reads the
+password from the process output, and opens the chat already connected. No
+Termux, no Debian install, no root, no build step on the phone:
 
 ```
 WebView  ──loads──▶  PocketHttpServer (127.0.0.1:8099, inside the app)
                           │
                           ├── serves /index.html, /assets/*, /sw.js from APK assets
-                          └── proxies /api/*, /auth/* ──▶ 127.0.0.1:4096
-                                                            (OpenCode in Debian proot)
+                          └── proxies /api/*, /auth/* ──▶ 127.0.0.1:4098
+                                                            (OpenCode inside the app)
 ```
 
-One origin means no CORS, no password in the address bar, and live SSE through
+The runtime is a musl rootfs with OpenCode 2.3.0, launched through a tiny JNI
+fork/exec bridge; the archive is SHA-256 verified before extraction. One origin
+means no CORS, no password in the address bar, and live SSE through
 the same socket. Haptics, clipboard, sharing, Downloads, notifications, the file
 picker and the back button go through the native bridge; the chat, artifacts,
 forms, queue, providers and MCP surfaces are the web client unchanged.
 
-Build on a machine with the Android SDK (the Gradle task copies the current web
+Build the APK with the Android SDK (the Gradle task copies the current web
 assets into the APK), then install:
 
 ```bash
@@ -230,16 +233,17 @@ cd android
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-On the phone, open **Termux → Settings → Allow external commands** so the
-foreground service may run `start.sh`, and disable battery optimisation for
-OpenCode Pocket. That is it — the app starts OpenCode and connects itself.
+**Termux fallback.** If your OpenCode already lives in Debian/Termux, set
+**Settings → Runtime → Termux**, reopen the app, and grant Termux
+**Settings → Allow external commands**. The same APK then uses your existing
+daemon at `4096`. Disable battery optimisation either way.
 
 > **One port, one owner.** The APK binds `127.0.0.1:8099` itself. If you also run
 > `bash start.sh` (or `node server.mjs --port 8099`) in Termux, whichever got the
 > port first wins and the other silently serves nothing — a stale service worker
 > can then make it look like the app ignored your update. Stop the Termux UI
-> before launching the APK, or start only the daemon with
-> `POCKET_NATIVE=1 OPENCODE_CMD="oc ~/projects serve --hostname 127.0.0.1 --port 4096" bash start.sh`.
+> The built-in daemon uses `4098`, so it does not collide with a Termux `4096`
+> server.
 
 ### Opening the app already connected
 

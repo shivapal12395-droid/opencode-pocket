@@ -20,7 +20,7 @@ object EmbeddedRuntime {
     private const val TAG = "Pocket.Embedded"
     private const val BUNDLE_URL =
         "https://github.com/shivapal12395-droid/opencode-pocket/releases/download/runtime-v2.3.0-r1/runtime.tar.gz"
-    private const val BUNDLE_SHA = "2afda3e355f54bef72e3a0eaa3bd316702eb7c4658f27a2a393a47b7c4c618d6"
+    private const val BUNDLE_SHA = "bb3a0a60f4be815909c6c43d1331b84a53e76b956f871cab04f4a3b6ee63e796"
 
     private fun note(context: Context, line: String) {
         Log.d(TAG, line)
@@ -81,33 +81,62 @@ object EmbeddedRuntime {
     }
 
     fun start(context: Context, port: Int = 4096): Long {
-        val nativeLib = context.applicationInfo.nativeLibraryDir
+        // Proot's ptrace-based guest exec is unreliable for a third-party app.
+        // The musl loader itself is an ET_DYN with no PT_INTERP, so Android can
+        // execute it directly from app storage (targetSdk 28). Invoking it with
+        // the binary as its argument is enough to start OpenCode.
         val rt = runtimeDir(context)
         val rootfs = File(rt, "rootfs")
-        val workspace = File(rt, "workspace").also { it.mkdirs() }
+        val loader = File(rootfs, "lib/ld-musl-aarch64.so.1")
+        val bin = File(rootfs, "usr/local/bin/opencode")
+        val home = File(context.filesDir, "opencode-home").also { it.mkdirs() }
+        val data = File(home, ".local/share").also { it.mkdirs() }
+        val cache = File(home, ".cache").also { it.mkdirs() }
+        val config = File(home, ".config").also { it.mkdirs() }
+        val state = File(home, ".local/state").also { it.mkdirs() }
         val tmp = File(context.filesDir, "tmp").also { it.mkdirs() }
+        val libPath = listOf(
+            File(rootfs, "lib").absolutePath,
+            File(rootfs, "usr/lib").absolutePath,
+        ).joinToString(":")
         val argv = arrayOf(
-            "$nativeLib/libproot.so",
-            "-r", rootfs.absolutePath,
-            "-b", "/dev",
-            "-b", "/proc",
-            "-b", "${workspace.absolutePath}:/workspace",
-            "-w", "/workspace",
-            "/usr/local/bin/opencode", "serve",
-            "--hostname", "127.0.0.1", "--port", port.toString(),
+            loader.absolutePath,
+            bin.absolutePath,
+            "serve", "--hostname", "127.0.0.1", "--port", port.toString(),
         )
         val env = arrayOf(
-            "LD_LIBRARY_PATH=$nativeLib",
-            "PROOT_TMP_DIR=${tmp.absolutePath}",
-            "PROOT_NO_SECCOMP=1",
-            "HOME=/root",
+            "LD_LIBRARY_PATH=$libPath",
+            "HOME=${home.absolutePath}",
+            "XDG_DATA_HOME=${data.absolutePath}",
+            "XDG_CACHE_HOME=${cache.absolutePath}",
+            "XDG_CONFIG_HOME=${config.absolutePath}",
+            "XDG_STATE_HOME=${state.absolutePath}",
+            "TMPDIR=${tmp.absolutePath}",
             "PATH=/usr/local/bin:/usr/bin:/bin",
             "TERM=xterm",
         )
         note(context, "launch: ${argv.joinToString(" ")}")
-        val h = NativeLauncher.start(argv, env)
+        val h = NativeLauncher.start(argv, env, home.absolutePath)
         note(context, "handle=$h")
         return h
+    }
+
+    data class Credentials(val port: Int, val secret: String)
+
+    /** Start the bundled daemon and wait until it prints its password. */
+    fun startAndWait(context: Context, port: Int = 4098, timeoutMs: Int = 45_000): Credentials? {
+        if (!install(context)) return null
+        val h = start(context, port)
+        val deadline = System.currentTimeMillis() + timeoutMs
+        var log = ""
+        while (System.currentTimeMillis() < deadline) {
+            log += output(h, 500)
+            val m = Regex("server password\\s+(\\S+)").find(log)
+            if (m != null) return Credentials(port, m.groupValues[1])
+            if (!NativeLauncher.running(h)) break
+        }
+        stop(h)
+        return null
     }
 
     /** Read whatever the daemon has printed (the password is on stdout). */
@@ -141,7 +170,7 @@ object EmbeddedRuntime {
                     note(context, "probe: install failed")
                     return@Thread
                 }
-                val h = start(context)
+                val h = start(context, 4097)
                 var log = ""
                 for (i in 0 until 12) {
                     val s = output(h, 1000)
@@ -152,21 +181,8 @@ object EmbeddedRuntime {
                     if (log.contains("server password", ignoreCase = true)) break
                 }
                 note(context, "probe done; got password=${log.contains("password", true)}")
+                note(context, "probe serve log: " + log.take(1500))
                 stop(h)
-
-                // Fallback experiment: invoke the musl loader directly. The
-                // loader is itself an ET_DYN with no PT_INTERP, so Android can
-                // execute it from app storage without proot's ptrace.
-                val rt = runtimeDir(context)
-                val loader = File(rt, "rootfs/lib/ld-musl-aarch64.so.1")
-                val bin = File(rt, "rootfs/usr/local/bin/opencode")
-                if (loader.exists() && bin.exists()) {
-                    val argv = arrayOf(loader.absolutePath, bin.absolutePath, "--version")
-                    val env = arrayOf("LD_LIBRARY_PATH=" + File(rt, "rootfs/lib").absolutePath)
-                    val h2 = NativeLauncher.start(argv, env)
-                    note(context, "loader probe handle=$h2 out=" + NativeLauncher.read(h2, 2500).take(400))
-                    note(context, "loader probe exit=" + NativeLauncher.waitFor(h2))
-                }
             } catch (t: Throwable) {
                 note(context, "probe failed: ${t.javaClass.simpleName}: ${t.message}")
             }

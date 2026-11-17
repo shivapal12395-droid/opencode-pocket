@@ -55,7 +55,29 @@ Termux is not, on stock Android. The only ways past it are outside this repo's
 control: a PIE build of OpenCode (not published), a device with an unlocked
 SELinux policy/root, or keeping Termux as the host.
 
-## Update — native launcher version (in progress)
+## Update — SHIPPED
+
+The embedded runtime now works on the test device. The earlier "hard blocker"
+was our approach (Termux's patched proot), not Android. The active path is:
+
+- `libproot.so` / JNI launcher — built and packaged, used for experiments.
+- **Direct musl loader exec** — the shipped path. `ld-musl-aarch64.so.1` is an
+  ET_DYN with no PT_INTERP, so Android can execute it from app storage when the
+  APK targets API 28. Passing the OpenCode binary as its argument starts the
+  daemon without proot, ptrace, or root.
+- `libstdc++` and `libgcc_s` are added to the rootfs; without them Bun fails with
+  `Error loading shared library libstdc++.so.6`.
+- `HOME` and all `XDG_*` variables must point into app-private storage, and the
+  child must `chdir` there, or config discovery walks `/` and every API call
+  returns 500.
+
+Verified on device: first launch, password capture, session creation, prompt,
+and a streamed answer ("ok") with the Termux daemon still running on 4096.
+
+The default is embedded; Settings → Runtime switches to Termux. Details live in
+[`android/README.md`](../android/README.md).
+
+## What stays supported
 
 Play Store apps (AnyClaw, NativeCode, AndroPI) and the open-source Mobile
 Harness prove this is possible, so the earlier conclusion was too broad. Their

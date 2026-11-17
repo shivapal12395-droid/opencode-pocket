@@ -1,11 +1,29 @@
 # Native Android shell
 
 `android/` is a real Kotlin app, not a browser shortcut. It packages the exact
-same vanilla web client that the PWA serves, hosts it from the APK's own assets,
-and proxies the OpenCode API to the daemon running in Termux. There is no second
-UI implementation and no laptop in the loop.
+same vanilla web client that the PWA serves. By default it also carries a
+small OpenCode runtime: install the APK, open it, and the app downloads and
+verifies the runtime, starts the daemon inside its own process, and connects.
+No Termux and no root are needed. An existing Termux/Debian setup can be used
+instead through **Settings → Runtime → Termux**.
 
-## Architecture
+## Runtime modes
+
+- **Built-in (default).** `EmbeddedRuntime.kt` downloads and SHA-256 verifies a
+  musl rootfs with OpenCode 2.3.0, then starts it through `NativeLauncher.kt`
+  (a small C++ fork/execve bridge). The musl loader is executed directly, so no
+  proot or root is needed. The daemon listens on `127.0.0.1:4098`; its password
+  is read from the child's stdout and passed to the WebView in the connect URL.
+  Proot binaries are still packaged for experiments but are not on the active
+  path.
+- **Termux (fallback).** The original path: `OpencodeService` starts `start.sh`
+  through Termux `RUN_COMMAND`, and OpenCode runs in Debian proot on `4096`.
+  Needs **Termux → Settings → Allow external commands**.
+
+The app rebuilds its local OpenCode store when switching modes so sessions from
+one daemon are not mistaken for sessions of the other.
+
+## Original architecture (Termux mode)
 
 ```
 WebView  ──loads──▶  PocketHttpServer (127.0.0.1:8099, inside the app)

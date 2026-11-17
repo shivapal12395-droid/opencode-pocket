@@ -15,7 +15,7 @@ android {
         // Kept at 36: the general (Termux) path is verified at this level and
         // the bundled proot runs from the native library directory, which is
         // executable regardless of targetSdk.
-        targetSdk = 36
+        targetSdk = 28
         versionCode = 1
         versionName = "1.0.0"
 
@@ -47,6 +47,10 @@ android {
 
     kotlinOptions {
         jvmTarget = "17"
+    }
+
+    packagingOptions {
+        jniLibs.useLegacyPackaging = true
     }
 
     buildFeatures {

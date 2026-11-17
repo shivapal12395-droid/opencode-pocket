@@ -37,6 +37,15 @@ class OpencodeService : Service() {
     }
 
     private fun startOpencode() {
+        val mode = getSharedPreferences("pocket", Context.MODE_PRIVATE)
+            .getString("runtimeMode", "embedded") ?: "embedded"
+        if (mode == "embedded") {
+            // MainActivity starts the bundled daemon and captures its password
+            // before loading the WebView; this service only keeps the process
+            // alive and shows the foreground notification.
+            updateNotification(getString(R.string.notif_title), "Built-in runtime running")
+            return
+        }
         if (!hasRunCommandPermission()) {
             updateNotification(
                 "Grant Termux access",

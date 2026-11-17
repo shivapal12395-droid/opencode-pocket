@@ -45,7 +45,8 @@ void freeArgv(char **a) {
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_shivapal_opencodepocket_NativeLauncher_start(JNIEnv *env, jclass,
                                                        jobjectArray argv,
-                                                       jobjectArray envp) {
+                                                       jobjectArray envp,
+                                                       jstring workdir) {
   auto args = toStrings(env, argv);
   auto envs = toStrings(env, envp);
   if (args.empty()) return -1;
@@ -62,6 +63,10 @@ Java_com_shivapal_opencodepocket_NativeLauncher_start(JNIEnv *env, jclass,
     close(pipefd[1]);
     char **av = toArgv(args);
     char **ev = toArgv(envs);
+    if (workdir) {
+      const char *wd = env->GetStringUTFChars(workdir, nullptr);
+      if (wd) { chdir(wd); env->ReleaseStringUTFChars(workdir, wd); }
+    }
     execve(av[0], av, ev);
     // execve only returns on failure
     dprintf(STDERR_FILENO, "execve failed: %s\n", strerror(errno));
@@ -113,7 +118,7 @@ Java_com_shivapal_opencodepocket_NativeLauncher_read(JNIEnv *env, jclass,
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_com_shivapal_opencodepocket_NativeLauncher_wait(JNIEnv *, jclass,
+Java_com_shivapal_opencodepocket_NativeLauncher_waitFor(JNIEnv *, jclass,
                                                       jlong handle) {
   pid_t pid = -1;
   int fd = -1;
@@ -134,6 +139,21 @@ Java_com_shivapal_opencodepocket_NativeLauncher_wait(JNIEnv *, jclass,
     g_fds.erase(handle);
   }
   return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_shivapal_opencodepocket_NativeLauncher_running(JNIEnv *, jclass,
+                                                         jlong handle) {
+  pid_t pid = -1;
+  {
+    std::lock_guard<std::mutex> lock(g_mu);
+    auto p = g_pids.find(handle);
+    if (p == g_pids.end()) return JNI_FALSE;
+    pid = p->second;
+  }
+  int status = 0;
+  pid_t r = waitpid(pid, &status, WNOHANG);
+  return (r == 0) ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT void JNICALL

@@ -14,3 +14,7 @@ android/.idea/
 *.apk
 android/.cxx/
 android/app/.cxx/
+tools/runtime.tar.gz
+tools/runtime/
+tools/runtime-build/
+tools/ocli/
