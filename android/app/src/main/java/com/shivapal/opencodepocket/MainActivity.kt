@@ -40,6 +40,11 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // Debug builds expose the WebView to chrome://inspect and to
+        // adb forward + the DevTools protocol, which is how the on-device DOM
+        // can be checked without watching the screen.
+        if (BuildConfig.DEBUG) WebView.setWebContentsDebuggingEnabled(true)
+
         // The loopback host is the web client *and* the API proxy. Starting it
         // before the WebView loads means the first fetch never races the server.
         http = PocketHttpServer(this)

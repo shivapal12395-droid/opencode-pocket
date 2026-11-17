@@ -35,6 +35,11 @@ credentials through `PocketNative.saveConfig()`, and `downloadText()` prefers
 `PocketNative.saveText()` so exports land in Downloads reliably. Both are no-ops
 in a browser.
 
+Debug builds call `WebView.setWebContentsDebuggingEnabled(true)`, so the real
+on-device DOM can be inspected with `chrome://inspect` or with the DevTools
+protocol over `adb forward tcp:19222 localabstract:webview_devtools_remote_<pid>`.
+Release builds do not expose it.
+
 ## Build
 
 ```bash
