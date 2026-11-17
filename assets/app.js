@@ -3651,7 +3651,14 @@ async function openNewSession() {
                     })
                   )
                   .join("")
-              : `<p class="sheet-note">No known workspaces yet — enter a path below.</p>`
+              : window.PocketNative?.workspaceDir
+                ? sheetRow({
+                    iconName: "folder",
+                    title: "Pocket workspace",
+                    sub: window.PocketNative.workspaceDir(),
+                    attrs: `data-dir="${escapeHtml(window.PocketNative.workspaceDir())}"`,
+                  })
+                : `<p class="sheet-note">No known workspaces yet - enter a path below.</p>`
           }
         </div>
         <button class="btn btn-ghost btn-block" style="margin-top:10px" id="custom-dir">Use a custom path…</button>

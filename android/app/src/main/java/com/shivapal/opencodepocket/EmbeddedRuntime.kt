@@ -90,6 +90,7 @@ object EmbeddedRuntime {
         val loader = File(rootfs, "lib/ld-musl-aarch64.so.1")
         val bin = File(rootfs, "usr/local/bin/opencode")
         val home = File(context.filesDir, "opencode-home").also { it.mkdirs() }
+        File(home, "workspace").mkdirs()
         val data = File(home, ".local/share").also { it.mkdirs() }
         val cache = File(home, ".cache").also { it.mkdirs() }
         val config = File(home, ".config").also { it.mkdirs() }

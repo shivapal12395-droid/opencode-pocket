@@ -157,6 +157,14 @@ class PocketBridge(private val activity: MainActivity) {
     @android.webkit.JavascriptInterface
     fun serviceRunning(): Boolean = OpencodeService.isRunning
 
+    /** A writable default project for the built-in runtime. */
+    @android.webkit.JavascriptInterface
+    fun workspaceDir(): String {
+        val dir = java.io.File(activity.filesDir, "opencode-home/workspace")
+        dir.mkdirs()
+        return dir.absolutePath
+    }
+
     @android.webkit.JavascriptInterface
     fun runtimeMode(): String =
         prefs.getString("runtimeMode", "embedded") ?: "embedded"
