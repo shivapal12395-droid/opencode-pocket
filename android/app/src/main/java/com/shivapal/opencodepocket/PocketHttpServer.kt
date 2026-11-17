@@ -217,7 +217,7 @@ class PocketHttpServer(
         val mime = mimeFor(assetPath)
         writeStatus(output, 200, "OK")
         writeHeader(output, "Content-Type", mime)
-        writeHeader(output, "Cache-Control", if (assetPath.endsWith(".html")) "no-cache" else "public, max-age=3600")
+        writeHeader(output, "Cache-Control", "no-cache")
         writeHeader(output, "X-Content-Type-Options", "nosniff")
         writeHeader(output, "Content-Length", bytes.size.toString())
         writeHeader(output, "Connection", "close")

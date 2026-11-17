@@ -410,6 +410,10 @@ svg { display: block; }
 .catalog-sub { display:block; font-size:10.5px; color:var(--muted); }
 .catalog-free { font-size:9px; font-weight:700; color:#000; background:var(--accent); padding:1px 5px; border-radius:5px; }
 .catalog-models { margin-top:12px; }
+.model-logo { width:24px; height:24px; flex:none; display:grid; place-items:center; border-radius:7px; background:var(--soft); }
+.model-logo img { width:16px; height:16px; }
+.si-check { width:18px; flex:none; color:var(--accent); }
+.si-check svg { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:2.4; }
 .empty {
   padding: 64px 24px; text-align: center; color: var(--muted-2); font-size: 13.5px; line-height: 1.6;
 }

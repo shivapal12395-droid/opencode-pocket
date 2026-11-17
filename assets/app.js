@@ -353,6 +353,28 @@ async function enterApp() {
   } catch (err) {
     handleError(err, "Could not load sessions");
   }
+
+  // Never leave a returning user on a blank screen, and never leave a brand
+  // new install with nothing to do: restore the last session, or create one
+  // in the default workspace.
+  const lastID = store.get("lastSessionID");
+  const last = state.sessions.find((s) => s.id === lastID) || state.sessions[0];
+  if (last) {
+    await openSession(last).catch(() => {});
+    return;
+  }
+  const dir = window.PocketNative?.workspaceDir?.() || state.lastWorkspace;
+  if (dir) {
+    try {
+      await ensureModels();
+      const res = await state.api.createSession({ directory: dir, model: state.lastModel || undefined });
+      if (res?.data) {
+        await openSession(res.data);
+      }
+    } catch {
+      // Stay on the session list; the New session button is still there.
+    }
+  }
 }
 
 function startEvents() {
@@ -707,6 +729,8 @@ async function openSession(sessionOrId) {
   if (!session) return;
 
   state.session = session;
+  store.set("lastSessionID", session.id);
+  store.set("lastWorkspace", session.location?.directory ?? state.lastWorkspace);
   state.messages = [];
   state.permissions = [];
   updatePermBanner();
@@ -3649,13 +3673,14 @@ async function openModelSheet() {
           shown
             .map((m) => {
               const selected = current && m.id === current.id && m.providerID === current.providerID;
-              return sheetRow({
-                iconName: "cpu",
-                title: m.name || m.id,
-                sub: `${m.providerID} · ${m.id}${m.limit?.context ? ` · ${Math.round(m.limit.context / 1000)}k ctx` : ""}`,
-                selected,
-                attrs: `data-model="${escapeHtml(m.providerID)}|${escapeHtml(m.id)}"`,
-              });
+              const color = PROVIDER_COLORS[m.providerID] ?? "#9aa0a6";
+              const logo = `https://models.dev/logos/${encodeURIComponent(m.providerID)}.svg`;
+              return `<button class="sheet-item model-row${selected ? " selected" : ""}" data-model="${escapeHtml(m.providerID)}|${escapeHtml(m.id)}">
+                <span class="model-logo"><img src="${logo}" alt="" style="color:${escapeHtml(color)}" onerror="this.style.display='none'" /></span>
+                <span class="si-text"><span class="si-title">${escapeHtml(m.name || m.id)}</span>
+                <span class="si-sub">${escapeHtml(m.providerID)} · ${escapeHtml(m.id)}${m.limit?.context ? ` · ${Math.round(m.limit.context / 1000)}k ctx` : ""}</span></span>
+                ${selected ? `<span class="si-check">${icon("check")}</span>` : ""}
+              </button>`;
             })
             .join("") +
           (filtered.length > shown.length

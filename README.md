@@ -15,6 +15,10 @@ No build step. No backend of its own. One static app that talks straight to `ope
 
 ## Screenshots
 
+| First open | Left sidebar | Chat |
+| --- | --- | --- |
+| <img src="docs/welcome.png" width="240" alt="Welcome state with starter prompts, workspace and model" /> | <img src="docs/sidebar.png" width="240" alt="Left navigation drawer with workspaces, pinned and recent chats" /> | <img src="docs/chat.png" width="240" alt="Streaming chat with tool calls" /> |
+
 | Sessions | Chat | Changes |
 | --- | --- | --- |
 | <img src="docs/sessions.png" width="240" alt="Session list grouped by workspace" /> | <img src="docs/chat.png" width="240" alt="Streaming chat with tool calls" /> | <img src="docs/changes.png" width="240" alt="Changed files with a unified diff" /> |
@@ -50,7 +54,7 @@ No phone, no server, no account: **[open the demo](https://shivapal12395-droid.g
 ## Features
 
 ### First open
-- **Ready to chat** — a new install opens a session immediately, not an empty list: welcome state, six starter prompts, the workspace name and the selected model.
+- **Ready to chat** — a returning user lands in their last session; a brand new install gets a session created in the default workspace. Either way the composer is visible immediately, with a welcome state and six starter prompts the first time.
 - **Default workspace** — created for you and remembered; switch or add more from the sidebar or Settings.
 - **Big Pickle** — the preferred default model (`opencode/big-pickle`), validated against the live catalog before use. If it is unavailable you get a warning, not a silent swap.
 - **Left sidebar** — drawer on phones, persistent column on tablets: search, new chat, workspaces, pinned, recents, settings, providers, connection.
