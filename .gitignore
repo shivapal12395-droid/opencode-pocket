@@ -12,3 +12,5 @@ android/app/src/main/assets/
 android/build/
 android/.idea/
 *.apk
+android/.cxx/
+android/app/.cxx/
