@@ -259,6 +259,12 @@ svg { display: block; }
 
 /* ---------- sessions ---------- */
 .list-head { padding: 10px 14px 6px; }
+.archived-toggle {
+  margin-top: 8px; height: 30px; padding: 0 12px; border-radius: 99px;
+  background: var(--soft); color: var(--muted); font-size: 12px; font-weight: 600;
+  border: 1px solid var(--line);
+}
+.archived-toggle.on { background: var(--accent-soft, var(--soft)); color: var(--accent); border-color: var(--accent); }
 .search-box {
   display: flex; align-items: center; gap: 8px; height: 40px;
   background: var(--elev); border: 1px solid var(--line); border-radius: var(--radius); padding: 0 8px 0 11px;
@@ -305,6 +311,11 @@ svg { display: block; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0;
 }
 .session-time { font-size: 11px; color: var(--muted-2); flex: none; }
+.session-archived {
+  font-size: 10px; font-weight: 600; letter-spacing: .02em; color: var(--muted-2);
+  border: 1px solid var(--line); border-radius: 5px; padding: 0 5px; flex: none;
+}
+.session-row.archived .session-title { color: var(--muted); }
 .session-busy { width: 6px; height: 6px; border-radius: 99px; background: var(--warn); flex: none; animation: pulse 1.2s infinite; }
 .session-more {
   width: 30px; height: 34px; flex: none; display: grid; place-items: center; color: var(--muted-2);
@@ -884,7 +895,9 @@ button.setting-row { width: 100%; text-align: left; background: none; border: 0;
 .artifact-screen {
   position: fixed;
   inset: 0;
-  z-index: 60;
+  /* Above the chat, below the scrim (40) and the sheet (50): the artifact's
+     own action menu is a sheet, so it must be able to cover the workspace. */
+  z-index: 30;
   background: var(--bg);
   display: flex;
   flex-direction: column;

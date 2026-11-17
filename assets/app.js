@@ -1,6 +1,6 @@
 import { Api, ApiError, normalizeBase, resolveSecret } from "./api.js";
 import { renderMarkdown, escapeHtml } from "./markdown.js";
-import { formCardHtml, buildAnswer, missingRequired, applyFormConditions } from "./forms.js";
+import { formCardHtml, buildAnswer, missingRequired, applyFormConditions, readFormValues } from "./forms.js";
 import { getPrefs, setPref, onPrefs, applyPrefs, ACCENTS, DEFAULTS, densityLabel, verbosityLabel, verbosityHint, scaleLabel } from "./prefs.js";
 import { detectArtifacts, artifactCardHtml, artifactBodyHtml } from "./artifacts.js";
 
@@ -73,6 +73,9 @@ const state = {
   theme: store.get("theme", "system"), // system dark -> amoled
   enterToSend: store.get("enterToSend", false),
   sheetOpen: false,
+  sheetClosing: false,
+  artifactClosing: false,
+  showArchived: store.get("showArchived", false),
   chatOpen: false,
   lastAssistantId: null,
   pendingRender: 0,
@@ -111,6 +114,7 @@ function cacheDom() {
   el.connectSubmit = $("#connect-submit");
   el.connectError = $("#connect-error");
   el.sessionList = $("#session-list");
+  el.archivedToggle = $("#archived-toggle");
   el.sessionSearch = $("#session-search");
   el.clearSearch = $("#clear-search");
   el.fabNew = $("#fab-new");
@@ -317,10 +321,28 @@ function toggleWorkspace(dir) {
 }
 
 function renderSessions() {
-  const list = state.sessions;
+  const all = state.sessions;
+  const archived = all.filter((s) => s.time?.archived);
+  // Nothing archived left to show: don't stay in a mode whose toggle is gone.
+  if (!archived.length && state.showArchived) {
+    state.showArchived = false;
+    store.set("showArchived", false);
+  }
+  const list = state.showArchived ? all : all.filter((s) => !s.time?.archived);
+  el.archivedToggle.hidden = archived.length === 0;
+  if (el.archivedToggle) {
+    el.archivedToggle.textContent = state.showArchived ? `Hide archived (${archived.length})` : `Archived (${archived.length})`;
+    el.archivedToggle.classList.toggle("on", state.showArchived);
+  }
   if (!list.length) {
-    el.sessionList.innerHTML = `<div class="empty">${icon("terminal")}<b>No sessions yet</b>${
-      state.search ? "Try a different search." : "Tap “New session” to start your first task."
+    el.sessionList.innerHTML = `<div class="empty">${icon("terminal")}<b>${
+      state.showArchived ? "No sessions yet" : archived.length ? "Everything here is archived" : "No sessions yet"
+    }</b>${
+      state.search
+        ? "Try a different search."
+        : archived.length && !state.showArchived
+          ? "Tap Archived to see them."
+          : 'Tap "New session" to start your first task.'
     }</div>`;
     return;
   }
@@ -355,10 +377,14 @@ function renderSessions() {
               const unread =
                 s.time?.viewed != null && (s.time?.updated ?? 0) > s.time.viewed && !busy;
               const failed = s.outcome === "failed";
+              const archived = !!s.time?.archived;
               return `
-                <div class="session-row${state.session?.id === s.id ? " active" : ""}${unread ? " unread" : ""}" data-id="${escapeHtml(s.id)}">
+                <div class="session-row${state.session?.id === s.id ? " active" : ""}${unread ? " unread" : ""}${
+                  archived ? " archived" : ""
+                }" data-id="${escapeHtml(s.id)}">
                   <button class="session-main" data-open="${escapeHtml(s.id)}">
                     <span class="session-title">${escapeHtml(title)}</span>
+                    ${archived ? '<span class="session-archived">Archived</span>' : ""}
                     ${failed ? `<span class="session-failed" title="Last run failed"></span>` : ""}
                     ${busy ? `<span class="session-busy"></span>` : `${unread ? `<span class="session-unread"></span>` : ""}`}
                     <span class="session-time">${timeAgo(s.time?.updated ?? s.time?.created)}</span>
@@ -1150,7 +1176,7 @@ function renderMessages(force = false) {
   // them, so they have to be impossible to miss.
   for (const entry of state.forms) {
     if (!entry?.form) continue;
-    chunks.push(formCardHtml(entry.form, { status: entry.status, answer: entry.answer }));
+    chunks.push(formCardHtml(entry.form, { status: entry.status, answer: entry.answer, values: entry.values }));
   }
 
   if (!chunks.length) {
@@ -1197,8 +1223,10 @@ function renderMessages(force = false) {
 
 function upsertForm(form) {
   const i = state.forms.findIndex((f) => f.form?.id === form.id);
-  if (i >= 0) state.forms[i] = { form, status: "pending", answer: null };
-  else state.forms.push({ form, status: "pending", answer: null });
+  // Re-sending form.created for a form already on screen must not wipe what the
+  // user has picked so far.
+  if (i >= 0) state.forms[i] = { ...state.forms[i], form };
+  else state.forms.push({ form, status: "pending", answer: null, values: {} });
 }
 
 function settleForm(id, status, answer) {
@@ -1213,8 +1241,18 @@ async function loadForms() {
   if (!state.api || !state.session) return;
   try {
     const list = await state.api.forms(state.session.id);
-    const settled = state.forms.filter((f) => f.status !== "pending");
-    state.forms = list.map((form) => settled.find((s) => s.form.id === form.id) ?? { form, status: "pending", answer: null });
+    const next = list.map((form) => {
+      const local = state.forms.find((f) => f.form?.id === form.id);
+      // Keep a local answer/selection if this form is still pending on screen.
+      return local ? { ...local, form } : { form, status: "pending", answer: null, values: {} };
+    });
+    // The server only returns forms that are still *waiting*. An answered form
+    // is a record of what was asked and what was chosen, so it stays in the
+    // transcript until another session is opened.
+    for (const local of state.forms) {
+      if (local.status !== "pending" && !next.some((f) => f.form?.id === local.form?.id)) next.push(local);
+    }
+    state.forms = next;
     renderMessages();
   } catch {
     // Forms are optional in older servers; never block the transcript on them.
@@ -1227,12 +1265,12 @@ async function submitForm(formID) {
   const entry = state.forms.find((f) => f.form?.id === formID);
   if (!card || !entry) return;
 
-  const missing = missingRequired(card, entry.form);
+  const missing = missingRequired(card, entry.form, entry.values);
   if (missing) {
     toast(`Answer "${missing.title || missing.key}" first`);
     return;
   }
-  const answer = buildAnswer(card, entry.form);
+  const answer = buildAnswer(card, entry.form, entry.values);
   try {
     await state.api.replyForm(state.session.id, formID, answer);
     settleForm(formID, "answered", answer);
@@ -2185,6 +2223,7 @@ function openArtifact(a) {
   if (!a || !el.artifact) return;
   state.artifact = a;
   state.artifactTab = a.kind === "diff" ? "code" : "preview";
+  state.artifactClosing = false;
   el.artifact.hidden = false;
   renderArtifact();
   haptic(8);
@@ -2192,14 +2231,19 @@ function openArtifact(a) {
 }
 
 function closeArtifact(fromPop = false) {
-  if (!state.artifact) return;
-  // Hand the pop back to the browser and let popstate do the closing, exactly
-  // like the sheet. Clearing state here would make popstate think it should
-  // close the whole conversation instead.
+  // The DOM is the source of truth for "is it visible". If a history step was
+  // consumed elsewhere, state.artifact can be null while the panel is still up;
+  // hiding it is always the right outcome.
+  const visible = el.artifact && !el.artifact.hidden;
   if (!fromPop) {
+    // Same async-history guard as the sheet: one pop per close.
+    if ((!state.artifact && !visible) || state.artifactClosing) return;
+    state.artifactClosing = true;
     history.back();
     return;
   }
+  if (!state.artifact && !visible && !state.artifactClosing) return;
+  state.artifactClosing = false;
   state.artifact = null;
   el.artifact.hidden = true;
 }
@@ -2290,21 +2334,21 @@ async function openMentionSheet(initial = "") {
       const search = async (q) => {
         const mine = ++token;
         const query = String(q ?? "").trim();
-        if (!query) {
-          list.innerHTML = '<p class="sheet-note">Start typing to search this workspace.</p>';
-          return;
-        }
-        list.innerHTML = '<p class="sheet-note">Searching...</p>';
+        // An empty query is not an empty screen: show a short list so the
+        // sheet is useful the moment it opens, then narrow as you type.
+        list.innerHTML = '<p class="sheet-note">' + (query ? "Searching..." : "Loading files...") + "</p>";
         let hits = [];
         try {
-          hits = await state.api.findFiles(query, { directory: workspaceDir(), limit: 60 });
+          hits = await state.api.findFiles(query, { directory: workspaceDir(), limit: query ? 60 : 20 });
         } catch (err) {
           if (mine === token) list.innerHTML = '<p class="sheet-note">' + escapeHtml(err.message || "Search failed") + "</p>";
           return;
         }
         if (mine !== token) return;
         if (!hits.length) {
-          list.innerHTML = '<p class="sheet-note">No files match \u201c' + escapeHtml(query) + "\u201d.</p>";
+          list.innerHTML = query
+            ? '<p class="sheet-note">No files match \u201c' + escapeHtml(query) + "\u201d.</p>"
+            : '<p class="sheet-note">Start typing to search this workspace.</p>';
           return;
         }
         list.innerHTML = hits
@@ -2334,10 +2378,8 @@ async function openMentionSheet(initial = "") {
         if (btn) insertMention(btn.dataset.mention);
       });
 
-      if (initial) {
-        input.value = initial;
-        search(initial);
-      }
+      if (initial) input.value = initial;
+      search(initial);
       input.focus();
     },
   });
@@ -3144,21 +3186,33 @@ function usageLine(m) {
 function openSheet({ title, body, onClose, kind = null }) {
   clearTimeout(state.sheetCloseTimer);
   state.sheetKind = kind;
+  // Every body() call attaches its own delegated click listener. Reusing one
+  // root would keep those closures alive, so a tap in a later sheet would also
+  // fire the handlers of every sheet opened before it (archiving the session
+  // from three menus ago, for example). A fresh host per open keeps the sheet
+  // as isolated as it looks.
+  const paint = () => {
+    el.sheetBody.innerHTML = "";
+    const host = document.createElement("div");
+    host.className = "sheet-host";
+    el.sheetBody.append(host);
+    body(host);
+    el.sheetBody.scrollTop = 0;
+    return host;
+  };
   if (state.sheetOpen) {
     // Swap content of the open sheet without pushing another history entry.
     el.sheetTitle.textContent = title;
-    el.sheetBody.innerHTML = "";
-    body(el.sheetBody);
+    paint();
     state.sheetOnClose = onClose;
-    el.sheetBody.scrollTop = 0;
     return;
   }
   el.sheetTitle.textContent = title;
-  el.sheetBody.innerHTML = "";
-  body(el.sheetBody);
+  paint();
   el.sheet.hidden = false;
   el.scrim.hidden = false;
   state.sheetOpen = true;
+  state.sheetClosing = false;
   state.sheetOnClose = onClose;
   requestAnimationFrame(() => {
     el.sheet.classList.add("open");
@@ -3168,11 +3222,18 @@ function openSheet({ title, body, onClose, kind = null }) {
 }
 
 function closeSheet(fromPop = false) {
-  if (!state.sheetOpen) return;
   if (!fromPop) {
+    // history.back() is asynchronous: a second tap on the X (or two calls in a
+    // row) would pop twice and take the conversation with it.
+    if (!state.sheetOpen || state.sheetClosing) return;
+    state.sheetClosing = true;
     history.back();
     return;
   }
+  // A popstate may arrive after the close was already requested; it still has
+  // to finish the job and clear the in-flight flag.
+  if (!state.sheetOpen && !state.sheetClosing) return;
+  state.sheetClosing = false;
   state.sheetOpen = false;
   el.sheet.classList.remove("open");
   el.scrim.classList.remove("open");
@@ -4093,6 +4154,14 @@ function bindEvents() {
   });
 
   el.fabNew.addEventListener("click", () => openNewSession());
+
+  el.archivedToggle?.addEventListener("click", () => {
+    state.showArchived = !state.showArchived;
+    store.set("showArchived", state.showArchived);
+    renderSessions();
+    haptic(6);
+  });
+
   $("#try-demo").addEventListener("click", () => {
     location.search = "?demo=1";
   });
@@ -4190,7 +4259,10 @@ function bindEvents() {
         } else {
           pick.setAttribute("aria-pressed", pick.getAttribute("aria-pressed") === "true" ? "false" : "true");
         }
-        applyFormConditions(card, entry.form);
+        // Persist the pick in the model *before* any re-render can replace this
+        // card; the transcript rebuilds on every streaming event.
+        entry.values = readFormValues(card, entry.form, entry.values);
+        applyFormConditions(card, entry.form, entry.values);
       }
       return;
     }
@@ -4248,7 +4320,10 @@ function bindEvents() {
     const card = e.target.closest(".form-card");
     if (!card) return;
     const entry = state.forms.find((f) => f.form?.id === card.dataset.form);
-    if (entry) applyFormConditions(card, entry.form);
+    if (entry) {
+      entry.values = readFormValues(card, entry.form, entry.values);
+      applyFormConditions(card, entry.form, entry.values);
+    }
   });
 
   el.input.addEventListener("input", () => {
@@ -4316,10 +4391,12 @@ function bindEvents() {
     renderArtifact();
   });
 
-  // back button: artifact, then sheet, then the conversation
+  // Back unwinds the topmost surface. A sheet can be opened from inside the
+  // artifact workspace (its action menu), so the sheet must be checked first —
+  // otherwise one history.back() closed the artifact and left the sheet behind.
   window.addEventListener("popstate", () => {
-    if (state.artifact) closeArtifact(true);
-    else if (state.sheetOpen) closeSheet(true);
+    if (state.sheetOpen || state.sheetClosing) closeSheet(true);
+    else if (state.artifact || state.artifactClosing) closeArtifact(true);
     else if (state.chatOpen) closeChat(true);
   });
 

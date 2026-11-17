@@ -502,7 +502,12 @@ MESSAGES.ses_demo8 = [
         ordinal: 1,
       },
       { type: "text", text: "```mermaid\n" + DEMO_DIAGRAM + "\n```", ordinal: 2 },
-      { type: "text", text: DEMO_DOC, ordinal: 3 },
+      {
+        type: "text",
+        text: "## Upload helper\n\n| Concern | How it is handled |\n| --- | --- |\n| Duplicates | keyed by SHA-256, so identical bytes dedupe |\n| File names | original name kept as metadata only |\n| Too large | rejected before the upload starts |\n\n## Inbox branch\n\nA queued prompt waits for the run to finish; a steer joins it immediately.",
+        ordinal: 3,
+      },
+      { type: "text", text: DEMO_DOC, ordinal: 4 },
     ],
   },
   { id: "msg_d8i", type: "idle", outcome: "succeeded", time: { created: now() - 4 * hour + 56_000 } },
@@ -547,6 +552,29 @@ export class MockApi {
     this.inboxMap = new Map();
     // sessions with a turn in flight
     this.busySessions = new Set();
+    // newest run per session; an older turn finishing must not clear it
+    this.runSeq = 0;
+    this.runs = new Map();
+    // the run a waiting form belongs to
+    this.formRuns = new Map();
+    // pending permission requests, keyed by request id
+    this.permissionMap = new Map();
+    this.permissionRuns = new Map();
+  }
+
+  beginRun(sid) {
+    const token = ++this.runSeq;
+    this.runs.set(sid, token);
+    this.busySessions.add(sid);
+    return token;
+  }
+
+  /** True when this turn is still the newest one for the session. */
+  endRun(sid, token) {
+    if (this.runs.get(sid) !== token) return false;
+    this.busySessions.delete(sid);
+    this.drainQueue(sid);
+    return true;
   }
 
   later(fn, ms) {
@@ -599,12 +627,21 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
 
   async updateSession(id, patch) {
     const s = this.sessionList.find((x) => x.id === id);
-    if (s && patch.title) {
+    if (!s) return { data: {} };
+    if (patch.title) {
       s.title = patch.title;
       s.time.updated = now();
       this.emit("session.renamed", { sessionID: id, title: patch.title });
     }
-    return { data: clone(s ?? {}) };
+    // Archive is a client-visible flag on the session, not a delete. The server
+    // keeps returning it; the list hides it unless archived ones are asked for.
+    if (patch.archived !== undefined) {
+      if (patch.archived) s.time.archived = now();
+      else delete s.time.archived;
+      s.time.updated = now();
+      this.emit("session.updated", { sessionID: id, archived: !!patch.archived });
+    }
+    return { data: clone(s) };
   }
 
   async deleteSession(id) {
@@ -628,20 +665,24 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
 
   async replyForm(sessionID, formID, answer) {
     const entry = this.formMap.get(formID);
+    const token = this.formRuns.get(formID);
     this.formMap.delete(formID);
+    this.formRuns.delete(formID);
     this.emit("form.replied", { id: formID, sessionID, answer });
     // The turn continues with the answer the user picked.
     const shown = Object.values(answer ?? {})
       .map((v) => (Array.isArray(v) ? v.join(", ") : String(v)))
       .join(", ");
-    this.later(() => this.finishWith(sessionID, `Thanks — going with **${shown}**.`), 220);
+    this.later(() => this.finishWith(sessionID, `Thanks — going with **${shown}**.`, token), 220);
     return { ok: true };
   }
 
   async cancelForm(sessionID, formID) {
+    const token = this.formRuns.get(formID);
     this.formMap.delete(formID);
+    this.formRuns.delete(formID);
     this.emit("form.cancelled", { id: formID, sessionID });
-    this.later(() => this.finishWith(sessionID, "Dismissed the question, so I stopped there."), 200);
+    this.later(() => this.finishWith(sessionID, "Dismissed the question, so I stopped there.", token), 200);
     return { ok: true };
   }
 
@@ -668,10 +709,24 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
   }
 
   async permissions() {
-    return { data: [] };
+    return { data: [...this.permissionMap.values()].map((p) => clone(p.request)) };
   }
 
-  async replyPermission() {
+  async replyPermission(sessionID, requestID, decision) {
+    const entry = this.permissionMap.get(requestID);
+    this.permissionMap.delete(requestID);
+    this.emit("permission.replied", { sessionID, requestID, decision });
+    const token = entry ? this.permissionRuns.get(requestID) : undefined;
+    this.permissionRuns.delete(requestID);
+    this.later(
+      () =>
+        this.finishWith(
+          sessionID,
+          decision === "reject" ? "Okay — I won't run it." : "Approved. Running it now.",
+          token
+        ),
+      200
+    );
     return {};
   }
 
@@ -968,7 +1023,10 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
   }
 
   async commands() {
-    return { data: [{ name: "init", description: "Create an AGENTS.md for this project" }, { name: "review", description: "Review the current changes" }] };
+    return [
+      { name: "init", description: "Create an AGENTS.md for this project" },
+      { name: "review", description: "Review the current changes" },
+    ];
   }
 
   async switchModel(id, model) {
@@ -991,6 +1049,10 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
 
   async interrupt(id) {
     this.clearTimers();
+    // Nothing is running after a stop: bump the run token so a stale finish
+    // callback can never mark this session idle twice.
+    this.runs.set(id, ++this.runSeq);
+    this.busySessions.delete(id);
     this.emit("session.execution.interrupted", { sessionID: id });
     this.later(() => this.emit("session.idle", { sessionID: id }), 200);
     return { interrupted: true };
@@ -1029,6 +1091,9 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
 
     // The question tool: a form blocks the turn until it is answered.
     if (/\b(ask|question|choose|which)\b/i.test(text)) return this.openForm(sid, text);
+
+    // Anything destructive asks for approval first, like the real permission gate.
+    if (/\b(deploy|force.?push|rm -rf)\b/i.test(text)) return this.openPermission(sid, text);
     const userMsg = {
       id: "msg_u_" + this.seq++,
       type: "user",
@@ -1048,7 +1113,7 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
     this.messageMap[sid] = [...(this.messageMap[sid] ?? []), userMsg, assistant];
     this.emit("session.inbox.enqueued", { sessionID: sid, inboxID: userMsg.id, item: { type: "user", payload: { text }, delivery: "steer" } });
 
-    this.busySessions.add(sid);
+    const runToken = this.beginRun(sid);
     this.later(() => this.emit("session.execution.started", { sessionID: sid }), 250);
     this.later(() => {
       this.emit("session.step.started", { sessionID: sid, assistantMessageID: assistantId, agent: "build", model: MODEL, started: now() });
@@ -1074,15 +1139,34 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
       this.emit("session.execution.succeeded", { sessionID: sid });
       this.messageMap[sid].push({ id: "msg_i_" + this.seq++, type: "idle", outcome: "succeeded", time: { created: now() } });
       this.emit("session.idle", { sessionID: sid });
-      this.busySessions.delete(sid);
       const s = this.sessionList.find((x) => x.id === sid);
       if (s) {
         s.title = s.title === "New session" ? text.slice(0, 60) : s.title;
         s.time.updated = now();
       }
-      this.drainQueue(sid);
+      this.endRun(sid, runToken);
     }, at + 120);
 
+    return { data: { id: userMsg.id, sessionID: sid, type: "user", payload: { text }, delivery: "steer", time: { created: now() } } };
+  }
+
+  /** A destructive tool call waits for approval, like the real permission gate. */
+  openPermission(sid, text) {
+    const requestID = "per_" + this.seq++;
+    const request = {
+      id: requestID,
+      sessionID: sid,
+      action: "bash",
+      resources: ["./deploy.sh production"],
+      message: "The agent wants to run this command in your workspace.",
+      metadata: { command: "./deploy.sh production" },
+      time: { created: now() },
+    };
+    const userMsg = { id: "msg_u_" + this.seq++, type: "user", text, files: [], time: { created: now() } };
+    this.messageMap[sid] = [...(this.messageMap[sid] ?? []), userMsg];
+    this.permissionMap.set(requestID, { request, sessionID: sid });
+    this.permissionRuns.set(requestID, this.beginRun(sid));
+    this.later(() => this.emit("permission.asked", { permission: request, sessionID: sid }), 500);
     return { data: { id: userMsg.id, sessionID: sid, type: "user", payload: { text }, delivery: "steer", time: { created: now() } } };
   }
 
@@ -1136,14 +1220,15 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
     const userMsg = { id: "msg_u_" + this.seq++, type: "user", text, files: [], time: { created: now() } };
     this.messageMap[sid] = [...(this.messageMap[sid] ?? []), userMsg];
     this.formMap.set(formID, { form, sessionID: sid });
-    this.busySessions.add(sid);
+    this.formRuns.set(formID, this.beginRun(sid));
     this.later(() => this.emit("session.execution.started", { sessionID: sid }), 200);
     this.later(() => this.emit("form.created", { form }), 600);
     return { data: { id: userMsg.id, sessionID: sid, type: "user", payload: { text }, delivery: "steer", time: { created: now() } } };
   }
 
   /** Closes a turn with a short answer (used after a form reply). */
-  finishWith(sid, text) {
+  finishWith(sid, text, runToken) {
+    const token = runToken ?? this.runs.get(sid);
     const assistantId = "msg_a_" + this.seq++;
     const assistant = {
       id: assistantId,
@@ -1161,8 +1246,7 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
     this.messageMap[sid].push({ id: "msg_i_" + this.seq++, type: "idle", outcome: "succeeded", time: { created: now() } });
     this.emit("session.execution.succeeded", { sessionID: sid });
     this.emit("session.idle", { sessionID: sid });
-    this.busySessions.delete(sid);
-    this.drainQueue(sid);
+    this.endRun(sid, token);
   }
 
   /** Runs whatever was queued while the session was busy. */
@@ -1202,6 +1286,7 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
     };
     this.messageMap[sid] = [...(this.messageMap[sid] ?? []), userMsg, assistant];
     this.emit("session.inbox.enqueued", { sessionID: sid, inboxID: userMsg.id, item: { type: "user", payload: { text }, delivery: "steer" } });
+    const runToken = this.beginRun(sid);
     this.later(() => this.emit("session.execution.started", { sessionID: sid }), 200);
     this.later(() => {
       this.emit("session.retry.scheduled", { sessionID: sid, assistantMessageID: assistantId, attempt: 1, error });
@@ -1220,6 +1305,7 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
         s.title = s.title === "New session" ? text.slice(0, 60) : s.title;
         s.time.updated = now();
       }
+      this.endRun(sid, runToken);
     }, 1900);
     return { data: { id: userMsg.id, sessionID: sid, type: "user", payload: { text }, delivery: "steer", time: { created: now() } } };
   }

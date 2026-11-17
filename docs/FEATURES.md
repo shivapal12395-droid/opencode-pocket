@@ -67,8 +67,9 @@ below is judged by "can I do it from a phone with this UI".
 | Tabs (several sessions at once) | yes (desktop + TUI) | **no** |
 | Recent sessions sidebar, pins, reorder | yes (desktop, experimental) | **no** |
 | Read / unread + inbox badges | yes | **yes** - unread dot from `time.viewed`, failed-run dot from `outcome` |
-| Inbox (queued prompts, delivered work) | yes | **no** |
-| Failed-run indicator on a tab | yes | **no** (list shows nothing) |
+| Inbox (queued prompts, delivered work) | yes | **yes** - queue-only strip above the composer, steer ↔ queue switch, cancel, `PATCH`/`DELETE /api/session/{id}/inbox` |
+| Failed-run indicator on a tab | yes | **yes** - `.session-failed` dot driven by `outcome` |
+| Archived sessions | hidden from the list | **yes** - hidden by default, an `Archived (n)` filter in the list header brings them back for unarchive |
 | Fork a session | yes | **yes** (`POST /api/session/{id}/fork`) |
 | Compact context | yes - also automatic, `keep.tokens`, `buffer`, background mode | **part** - manual only, automatic is server-side |
 | Undo / revert | `/undo` stages a rollback, `/redo` cancels, next prompt commits | **yes** (stage → keep/drop, banner) |

@@ -119,6 +119,36 @@ phone
 > Termux its launcher misdetects Android-arm64 and downloads the Linux-x64 binary, so it
 > fails to start. Running it inside `proot-distro` is the working on-device route.
 
+### Native Android app
+
+The same web client also ships as a real Kotlin app in [`android/`](android/README.md).
+It is a WebView over the identical vanilla UI, not a second implementation:
+
+```
+WebView  ──loads──▶  PocketHttpServer (127.0.0.1:8099, inside the app)
+                          │
+                          ├── serves /index.html, /assets/*, /sw.js from APK assets
+                          └── proxies /api/*, /auth/* ──▶ 127.0.0.1:4096
+                                                            (OpenCode in Debian proot)
+```
+
+Serving the UI and the API from one loopback origin removes CORS, keeps the
+password out of the address bar, and lets SSE deltas stream straight through.
+Haptics, clipboard, sharing, Downloads, notifications, the file picker and the
+hardware back button go through the native bridge; the chat, artifacts, forms,
+queue, providers and MCP surfaces are the web client unchanged.
+
+```bash
+cd android
+./gradlew assembleDebug        # android/app/build/outputs/apk/debug/app-debug.apk
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+Then in Termux open **Settings → Allow external commands** (grants
+`com.termux.permission.RUN_COMMAND`), and disable battery optimisation for
+OpenCode Pocket so the foreground service survives a locked screen. OpenCode
+itself still runs in Termux/Debian — the app starts it, it does not bundle it.
+
 1. **Install Termux** from [F-Droid](https://f-droid.org/en/packages/com.termux/) or the
    [GitHub releases](https://github.com/termux/termux-app/releases). The Play Store build is
    outdated and will not work. Keep ~2 GB free.
