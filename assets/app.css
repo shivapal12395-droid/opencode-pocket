@@ -822,6 +822,17 @@ svg { display: block; }
   .sheet { max-width: 640px; }
 }
 
+/* A phone turned sideways is still a phone: the desktop phone-frame above left
+   it as a narrow column with dead black margins. Use the whole screen and keep
+   only the transcript at a readable measure. */
+@media (min-width: 900px) and (pointer: coarse) {
+  .app { max-width: none; border-left: 0; border-right: 0; }
+  .sheet { max-width: none; }
+  .messages { padding-left: max(16px, calc((100% - 760px) / 2)); padding-right: max(16px, calc((100% - 760px) / 2)); }
+  .composer { padding-left: max(10px, calc((100% - 780px) / 2)); padding-right: max(10px, calc((100% - 780px) / 2)); }
+  .welcome { padding-left: max(18px, calc((100% - 760px) / 2)); padding-right: max(18px, calc((100% - 760px) / 2)); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
 }

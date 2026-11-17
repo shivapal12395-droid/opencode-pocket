@@ -241,8 +241,10 @@ MCP write paths and the task checklist.
 | Custom MCP | **yes** - add remote (URL/headers) and local (command/env) servers via `PUT /api/experimental/mcp/{server}` |
 | Commands | **yes** - server catalog in a searchable palette; action commands (`/new`, `/clear`, `/models`, `/agents`, `/export`, `/help`) run in-app, everything else is sent to the server unchanged |
 | Startup supervisor | **yes** - one daemon owner outside the Activity; health check before start, stale-port handling, bounded retries, stable UI port, same-origin proxy routing |
+| First-run install screen | **yes** - the launch screen names the stage it is in and shows real download progress ("Downloading the OpenCode engine · 20 of 118 MB", 0-100% bar), then "Verifying", "Unpacking", "Starting", "Loading your workspace"; a failure shows the reason and retries on tap |
 | Activity grouping | **yes** - one panel per user request, collapsed by default, full width, all tool steps from every assistant message in that turn; thought steps merge into one "Thought process" block instead of one row per step |
-| Bundled typography | **yes** - Inter and JetBrains Mono ship inside the APK, so Android theme fonts (handwriting, condensed, etc.) can no longer replace the app's type; user font scaling still applies to prose and bubbles alike |
+| Bundled typography | **yes** - Inter and JetBrains Mono ship inside the APK, so Android theme fonts (handwriting, condensed, etc.) can no longer replace the app's type; user font scaling still applies to prose and bubbles alike; the native launch screen loads its own copy of the same face |
+| Landscape | **yes** - a phone turned sideways fills the screen (the desktop phone-frame no longer applies on touch), with the transcript held to a readable measure |
 | Bundled runtime DNS | **yes** - Android has no `/etc/resolv.conf`, so the musl loader is patched to read `./resolv.conf` from the app's runtime home; this removes the fresh-install `EAI_AGAIN` failure |
 | Pocket APK updater | **yes** - GitHub Releases check, SHA-256 + signing-certificate verification, system installer, progress and notes |
 | OpenCode engine updater | **part** - engine version and restart are in-app; updating a Termux installation is still the official `opencode upgrade` command inside Debian. The embedded engine is updated with the app |

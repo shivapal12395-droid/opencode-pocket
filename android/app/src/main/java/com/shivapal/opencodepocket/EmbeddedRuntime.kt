@@ -125,31 +125,49 @@ object EmbeddedRuntime {
         try {
             if (!tar.exists() || sha256(tar) != BUNDLE_SHA) {
                 note(context, "downloading $BUNDLE_URL")
+                RuntimeStatus.set("Downloading the OpenCode engine", 0)
                 val conn = URL(BUNDLE_URL).openConnection() as HttpURLConnection
                 conn.instanceFollowRedirects = true
                 conn.connectTimeout = 20_000
                 conn.readTimeout = 60_000
+                val expected = conn.contentLengthLong
                 conn.inputStream.use { input ->
                     tar.outputStream().use { out ->
                         val buf = ByteArray(64 * 1024)
                         var total = 0L
+                        var lastPct = -1
                         while (true) {
                             val n = input.read(buf)
                             if (n < 0) break
                             out.write(buf, 0, n)
                             total += n
+                            // Repainting only when the whole percent changes keeps
+                            // the UI thread free during a 124 MB download.
+                            if (expected > 0) {
+                                val pct = (total * 100 / expected).toInt().coerceIn(0, 100)
+                                if (pct != lastPct) {
+                                    lastPct = pct
+                                    RuntimeStatus.set(
+                                        "Downloading the OpenCode engine · ${total / 1_048_576} of ${expected / 1_048_576} MB",
+                                        pct,
+                                    )
+                                }
+                            }
                         }
                         note(context, "downloaded $total bytes")
                     }
                 }
             }
+            RuntimeStatus.set("Verifying the download", -1)
             val digest = sha256(tar)
             if (digest != BUNDLE_SHA) {
                 note(context, "SHA mismatch: $digest")
                 tar.delete()
+                RuntimeStatus.set("The download was damaged", -1)
                 return false
             }
             note(context, "SHA verified")
+            RuntimeStatus.set("Unpacking the engine", -1)
             val x = ProcessBuilder("/system/bin/tar", "-xzf", tar.absolutePath, "-C", context.filesDir.absolutePath)
                 .redirectErrorStream(true).start()
             val xo = x.inputStream.bufferedReader().readText()
@@ -160,6 +178,7 @@ object EmbeddedRuntime {
             return installed(context)
         } catch (t: Throwable) {
             note(context, "install failed: ${t.javaClass.simpleName}: ${t.message}")
+            RuntimeStatus.set("Could not install the engine", -1)
             return false
         }
     }
@@ -214,6 +233,7 @@ object EmbeddedRuntime {
         for (candidate in port..port + 2) {
             if (portOpen(candidate)) continue
             note(context, "starting daemon on $candidate")
+            RuntimeStatus.set("Starting the OpenCode engine", -1)
             val h = start(context, candidate)
             val deadline = System.currentTimeMillis() + timeoutMs
             var log = ""
@@ -226,6 +246,7 @@ object EmbeddedRuntime {
             }
             if (password != null && healthy(candidate, password!!)) {
                 note(context, "daemon ready on $candidate")
+                RuntimeStatus.set("Loading your workspace", -1)
                 return Credentials(candidate, password!!)
             }
             note(context, "daemon on $candidate failed: ${log.take(300)}")

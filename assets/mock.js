@@ -1153,30 +1153,82 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
     // Anything destructive asks for approval first, like the real permission gate.
     if (/\b(deploy|force.?push|rm -rf)\b/i.test(text)) return this.openPermission(sid, text);
 
-    // Deterministic multi-step turn: two assistant messages in one request.
-    // Used by the activity-grouping regression test.
+    // Deterministic multi-step turn: two assistant messages in one request,
+    // emitted step by step so the activity panel can be observed live (and so
+    // the demo looks like a real turn instead of an instant paste).
     if (/multi-step/i.test(text)) {
       const u = { id: "msg_u_" + this.seq++, type: "user", text, files: [], time: { created: now() } };
-      const a1 = {
-        id: "msg_a_" + this.seq++, type: "assistant", model: MODEL, agent: "build",
-        content: [
-          { type: "reasoning", text: "The session logic lives in src/auth/session.ts. Read it before editing.", ordinal: 0 },
-          tool("call_ms1", "read", { filePath: "src/auth/session.ts" }, "read 120 lines"),
-          { type: "text", text: "I read the session code. Now I will update it.", ordinal: 1 },
-        ],
-        time: { created: now(), completed: now() },
-      };
-      const a2 = {
-        id: "msg_a_" + this.seq++, type: "assistant", model: MODEL, agent: "build",
-        content: [
-          { type: "reasoning", text: "The cookie is written without an expiry, so it dies with the process.", ordinal: 0 },
-          tool("call_ms2", "edit", { filePath: "src/auth/session.ts" }, "applied 1 edit"),
-          { type: "text", text: "Both steps are done.", ordinal: 1 },
-        ],
-        time: { created: now(), completed: now() },
-      };
-      this.messageMap[sid] = [...(this.messageMap[sid] ?? []), u, a1, a2, { id: "msg_i_" + this.seq++, type: "idle", outcome: "succeeded", time: { created: now() } }];
-      this.later(() => this.emit("session.idle", { sessionID: sid }), 300);
+      const a1 = "msg_a_" + this.seq++;
+      const a2 = "msg_a_" + this.seq++;
+      // The shells live in the stored transcript too: a real server keeps what
+      // it streams, and the client reloads the session on idle.
+      const a1m = { id: a1, type: "assistant", model: MODEL, agent: "build", content: [], time: { created: now() } };
+      const a2m = { id: a2, type: "assistant", model: MODEL, agent: "build", content: [], time: { created: now() } };
+      this.messageMap[sid] = [...(this.messageMap[sid] ?? []), u, a1m, a2m];
+      const token = this.beginRun(sid);
+      const ev = (name, data) => this.emit(name, { sessionID: sid, agent: "build", model: MODEL, ...data });
+
+      this.later(() => ev("session.execution.started", {}), 200);
+      this.later(() => {
+        ev("session.step.started", { assistantMessageID: a1, started: now() });
+        a1m.content.push({ type: "reasoning", text: "The session logic lives in src/auth/session.ts. Read it before editing.", ordinal: 0 });
+        ev("session.reasoning.ended", {
+          assistantMessageID: a1, ordinal: 0,
+          text: "The session logic lives in src/auth/session.ts. Read it before editing.",
+        });
+        a1m.content.push({ type: "tool", id: "call_ms1", name: "read", executed: false, state: { status: "running", input: { filePath: "src/auth/session.ts" } } });
+        ev("session.tool.called", { assistantMessageID: a1, id: "call_ms1", name: "read", input: { filePath: "src/auth/session.ts" } });
+      }, 400);
+      this.later(() => {
+        const part = a1m.content.find((p) => p.type === "tool" && p.id === "call_ms1");
+        if (part) part.state = { status: "completed", input: part.state.input, content: [{ type: "text", text: "read 120 lines" }], metadata: { status: "completed", exit: 0, truncated: false } };
+        if (part) part.executed = true;
+        ev("session.tool.success", {
+          assistantMessageID: a1, id: "call_ms1", executed: true,
+          content: [{ type: "text", text: "read 120 lines" }],
+          metadata: { status: "completed", exit: 0, truncated: false },
+        });
+      }, 900);
+      this.later(() => {
+        a1m.content.push({ type: "text", text: "I read the session code. Now I will update it.", ordinal: 1, time: { completed: now() } });
+        ev("session.text.ended", { assistantMessageID: a1, ordinal: 1, text: "I read the session code. Now I will update it." });
+        ev("session.step.ended", { assistantMessageID: a1 });
+      }, 1300);
+      this.later(() => {
+        ev("session.step.started", { assistantMessageID: a2, started: now() });
+        a2m.content.push({ type: "reasoning", text: "The cookie is written without an expiry, so it dies with the process.", ordinal: 0 });
+        ev("session.reasoning.ended", {
+          assistantMessageID: a2, ordinal: 0,
+          text: "The cookie is written without an expiry, so it dies with the process.",
+        });
+        a2m.content.push({ type: "tool", id: "call_ms2", name: "edit", executed: false, state: { status: "running", input: { filePath: "src/auth/session.ts" } } });
+        ev("session.tool.called", { assistantMessageID: a2, id: "call_ms2", name: "edit", input: { filePath: "src/auth/session.ts" } });
+      }, 1600);
+      this.later(() => {
+        const part = a2m.content.find((p) => p.type === "tool" && p.id === "call_ms2");
+        if (part) part.state = { status: "completed", input: part.state.input, content: [{ type: "text", text: "applied 1 edit" }], metadata: { status: "completed", exit: 0, truncated: false } };
+        if (part) part.executed = true;
+        ev("session.tool.success", {
+          assistantMessageID: a2, id: "call_ms2", executed: true,
+          content: [{ type: "text", text: "applied 1 edit" }],
+          metadata: { status: "completed", exit: 0, truncated: false },
+        });
+      }, 2100);
+      this.later(() => {
+        a2m.content.push({ type: "text", text: "Both steps are done.", ordinal: 1, time: { completed: now() } });
+        ev("session.text.ended", { assistantMessageID: a2, ordinal: 1, text: "Both steps are done." });
+        ev("session.step.ended", { assistantMessageID: a2 });
+        ev("session.execution.succeeded", {});
+      }, 2600);
+      this.later(() => {
+        a1m.tokens = { input: 3200, output: 42, reasoning: 210, cache: { read: 2800, write: 0 } };
+        a1m.cost = 0.0004;
+        a1m.time = { ...a1m.time, completed: now() };
+        a2m.tokens = { input: 3400, output: 58, reasoning: 180, cache: { read: 3100, write: 0 } };
+        a2m.cost = 0.0005;
+        a2m.time = { ...a2m.time, completed: now() };
+        if (this.endRun(sid, token)) this.emit("session.idle", { sessionID: sid });
+      }, 2900);
       return { data: { id: u.id, sessionID: sid, type: "user", payload: { text }, delivery: "steer", time: { created: now() } } };
     }
     const userMsg = {

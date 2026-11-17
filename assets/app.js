@@ -1051,8 +1051,10 @@ function activityDuration(items) {
 
 function fmtDuration(ms) {
   if (!ms) return "";
-  if (ms < 1000) return Math.round(ms) + "ms";
-  if (ms < 60_000) return (ms / 1000).toFixed(ms < 10_000 ? 1 : 0) + "s";
+  if (ms < 1000) return "1s";
+  // Whole seconds: "Worked for 5s" reads like a duration, "5.0s" reads like a
+  // stopwatch that is still running.
+  if (ms < 60_000) return Math.round(ms / 1000) + "s";
   const m = Math.floor(ms / 60_000);
   const s = Math.round((ms % 60_000) / 1000);
   return s ? `${m}m ${s}s` : `${m}m`;
@@ -1073,7 +1075,10 @@ function renderActivity(items, m, streaming, keyOverride = null, durationMs = 0)
       .join("");
   }
 
-  const live = streaming && items.some((i) => i.part.type === "tool" && toolStatus(i.part) === "running");
+  // A turn stays "live" until the server reports it finished. Requiring a tool
+  // to be in `running` state made the panel flash "Worked for 9.3s" in the gaps
+  // between steps, while the turn was still streaming.
+  const live = !!streaming;
   const steps = tools.length + (reasoning.length ? 1 : 0);
   const dur = durationMs || activityDuration(items);
   const count = `${steps} ${steps === 1 ? "step" : "steps"}`;
@@ -1215,13 +1220,18 @@ function followUpsFor(m) {
 
 function turnDuration(turn, live) {
   if (!turn?.start) return 0;
-  const end = live ? Date.now() : turn.end ?? turn.start;
+  // `end` comes from the server's completion/idle time. A restored transcript
+  // sometimes has none (older sessions, cached history), and "Worked · 3 steps"
+  // with no duration looks broken, so fall back to when the last step arrived.
+  const end = live ? Date.now() : turn.end || turn.last || turn.start;
   return Math.max(0, end - turn.start);
 }
 
 function renderAssistant(m, opts = {}) {
   const parts = messageParts(m);
   const streaming = opts.streaming ?? (state.busy && m.id === state.lastAssistantId);
+  // Only the message that ends the turn carries actions and token counters.
+  const showMeta = opts.showMeta !== false;
   const turn = opts.turn ?? null;
   const showActivity = !!opts.showActivity && !!turn?.items?.length;
   let activityShown = false;
@@ -1284,14 +1294,14 @@ function renderAssistant(m, opts = {}) {
   const empty =
     !html && !failure && streaming ? `<div class="typing-row"><span class="typing"><i></i><i></i><i></i></span></div>` : "";
 
-  const footer = streaming ? "" : `${usageLine(m)}${followUpsFor(m)}`;
+  const footer = streaming || !showMeta ? "" : `${usageLine(m)}${followUpsFor(m)}`;
 
   return `
     <div class="msg msg-assistant" data-msg="${escapeHtml(m.id)}">
       <div class="assistant-body">${html}${retry}${failure}${empty}</div>
       ${artifactCards(m)}
-      ${stamp(m)}
-      ${streaming ? "" : assistantActions(m)}
+      ${showMeta ? stamp(m) : ""}
+      ${streaming || !showMeta ? "" : assistantActions(m)}
       ${footer}
     </div>`;
 }
@@ -1454,12 +1464,13 @@ function renderMessages(force = false) {
   for (const m of state.messages) {
     if (m.type === "user" || turnCursor < 0) {
       turnCursor = Math.max(0, turnCursor + 1);
-      turns[turnCursor] = { id: turnCursor, items: [], activityMessageId: null, start: 0, end: 0 };
+      turns[turnCursor] = { id: turnCursor, items: [], activityMessageId: null, metaMessageId: null, start: 0, end: 0, last: 0 };
     }
     const bucket = turns[turnCursor];
     const created = m.time?.created ?? 0;
     if (bucket && created) {
       if (!bucket.start || created < bucket.start) bucket.start = created;
+      if (created > bucket.last) bucket.last = created;
       const finished = m.time?.completed ?? (m.type === "idle" ? created : 0);
       if (finished && finished > bucket.end) bucket.end = finished;
     }
@@ -1470,6 +1481,11 @@ function renderMessages(force = false) {
           if (!turns[turnCursor].activityMessageId) turns[turnCursor].activityMessageId = m.id;
         }
       });
+      // Actions and the token line belong to the answer that ends the turn.
+      // Repeating them after every narration step made one reply look like
+      // three separate messages, each with its own counters.
+      const hasAnswer = messageParts(m).some((p) => p.type === "text" && (p.text ?? "").trim());
+      if (hasAnswer) turns[turnCursor].metaMessageId = m.id;
     }
   }
 
@@ -1489,6 +1505,7 @@ function renderMessages(force = false) {
           turn,
           showActivity: !!turn && turn.activityMessageId === m.id,
           streaming: lastTurn && state.busy,
+          showMeta: !turn || !turn.metaMessageId || turn.metaMessageId === m.id,
         })
       );
     } else if (m.type === "idle" && m.outcome && m.outcome !== "succeeded") {

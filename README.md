@@ -19,9 +19,13 @@ No build step. No backend of its own. One static app that talks straight to `ope
 | --- | --- | --- |
 | <img src="docs/welcome.png" width="240" alt="Welcome state with starter prompts, workspace and model" /> | <img src="docs/sidebar.png" width="240" alt="Left navigation drawer with workspaces, pinned and recent chats" /> | <img src="docs/chat.png" width="240" alt="Streaming chat with tool calls" /> |
 
-| Sessions | Chat | Changes |
+On a first launch the bundled engine downloads itself; the launch screen reports the real stage and progress instead of a frozen line of text:
+
+<p align="center"><img src="docs/first-run.png" width="260" alt="First-run screen showing the engine downloading with a real progress bar" /></p>
+
+| Sessions | Changes | Artifacts inline |
 | --- | --- | --- |
-| <img src="docs/sessions.png" width="240" alt="Session list grouped by workspace" /> | <img src="docs/chat.png" width="240" alt="Streaming chat with tool calls" /> | <img src="docs/changes.png" width="240" alt="Changed files with a unified diff" /> |
+| <img src="docs/sessions.png" width="240" alt="Session list grouped by workspace" /> | <img src="docs/changes.png" width="240" alt="Changed files with a unified diff" /> | <img src="docs/chat-artifacts.png" width="240" alt="Artifact cards under a finished answer" /> |
 
 | Models | Mention a file | Session menu |
 | --- | --- | --- |
@@ -39,9 +43,9 @@ No build step. No backend of its own. One static app that talks straight to `ope
 | --- | --- | --- |
 | <img src="docs/connections.png" width="240" alt="Provider keys and OAuth sign-in" /> | <img src="docs/mcp-controls.png" width="240" alt="Connect, disconnect and remove MCP servers" /> | <img src="docs/task-progress.png" width="240" alt="A live checklist at the top of a long task" /> |
 
-| Activity timeline | Artifacts inline |
-| --- | --- |
-| <img src="docs/chat-activity.png" width="240" alt="A run of tool calls folded into one expandable row" /> | <img src="docs/chat-artifacts.png" width="240" alt="Artifact cards under a finished answer" /> |
+| Activity timeline | Attach a photo or file | Customize |
+| --- | --- | --- |
+| <img src="docs/chat-activity.png" width="240" alt="Every tool call and thought of one request folded into a single expandable panel with a real duration" /> | <img src="docs/attach-menu.png" width="240" alt="The composer plus button opening Camera, Photos and Files" /> | <img src="docs/customize.png" width="240" alt="Customize hub linking models, providers, agents, permissions, skills, commands, instructions and appearance" /> |
 
 | Streaming | Tool call | A failed turn |
 | --- | --- | --- |
@@ -62,7 +66,7 @@ No phone, no server, no account: **[open the demo](https://shivapal12395-droid.g
 
 ### Chat
 - **Streaming** — text, reasoning and tool calls render live over SSE.
-- **Activity timeline** — a run of tool calls and thoughts folds into one expandable row ("4 steps · read 2 · ran 1"), live while it works. Low / medium / high verbosity.
+- **Activity timeline** — everything one request did folds into a single expandable panel titled with the turn's real duration ("Worked for 36s · 6 steps"), live as "Working..." while it runs; thoughts merge into one trace, tool rows keep their real verb and state ("Read file", "Ran shell", "Edited file"). Low / medium / high verbosity, and actions/token counts appear once per reply instead of once per step.
 - **Message actions** — copy, ask again, copy as Markdown, save `.md`, share, edit-and-resend, and suggested follow-ups when the answer earns them.
 - **Artifacts** — a generated file, page, diagram or long document becomes a card in the transcript that opens full screen: preview and code tabs, line numbers, wrap, copy, save. HTML runs in a sandboxed frame with no access to this app or its password.
 - **Questions from the agent** — the `question` tool arrives as a form with choices, free text, multiselect and conditional fields; answering it unblocks the turn.

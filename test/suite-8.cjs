@@ -118,6 +118,66 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     return `${info.names.join(" + ")}`;
   });
 
+  await test("A multi-step turn carries one action row and one usage line", async () => {
+    // The demo's `multi-step` turn answers twice (narration, then the final
+    // answer). Each assistant message used to render its own copy/retry row and
+    // its own "3.9k in · 48 out" line, so one reply looked like three.
+    // Tokens arrive with the turn's last event, so wait for the turn to finish.
+    for (let i = 0; i < 40; i++) {
+      const done = await page.evaluate(() => {
+        const t = [...document.querySelectorAll(".act-title")].slice(-1)[0]?.textContent ?? "";
+        return t.startsWith("Worked");
+      });
+      if (done) break;
+      await sleep(200);
+    }
+    await sleep(400);
+    const rows = await page.evaluate(() => {
+      const msgs = [...document.querySelectorAll(".msg-assistant:not(.step-only)")];
+      const last = msgs[msgs.length - 1];
+      const all = document.querySelector("#messages").innerText;
+      return {
+        md: last.querySelectorAll(".md").length,
+        actionRows: last.querySelectorAll("[data-copy-msg], .msg-actions, .assistant-actions").length,
+        usage: (last.innerText.match(/ in · /g) || []).length,
+        usageAll: (all.match(/ in · /g) || []).length,
+        narration: [...document.querySelectorAll(".msg-assistant .md")].map((n) => n.textContent.trim()).filter(Boolean).length,
+      };
+    });
+    assert(rows.md >= 1, "text blocks=" + rows.md);
+    assert(rows.narration >= 2, "turn rendered " + rows.narration + " text blocks (expected narration + answer)");
+    assert(rows.actionRows === 1, "action rows=" + rows.actionRows);
+    assert(rows.usage === 1, "answer usage lines=" + rows.usage);
+    assert(rows.usageAll === rows.usage, "usage repeated outside the answer: " + rows.usageAll);
+    return `${rows.narration} text blocks · ${rows.actionRows} action row · ${rows.usage} usage line`;
+  });
+
+  await test("A running turn says Working, never a finished duration", async () => {
+    // The panel used to fall back to "Worked for 9.3s" in the gaps between
+    // steps, because `live` required a tool in the `running` state. The
+    // composer's data-mode flips back to "send" as soon as text arrives, so
+    // sampling the panel title is the honest signal here.
+    await page.click("#chat-back");
+    await sleep(300);
+    await page.click('.session-row [data-open="ses_demo1"]');
+    await page.waitForSelector(".msg", { timeout: 8000 });
+    await sleep(400);
+    await page.fill("#input", "multi-step change please");
+    await page.click("#btn-send");
+    const titles = [];
+    for (let i = 0; i < 25; i++) {
+      await sleep(120);
+      const t = await page.evaluate(() => [...document.querySelectorAll(".act-title")].slice(-1)[0]?.textContent ?? "");
+      if (t) titles.push(t);
+    }
+    const live = titles.filter((t) => t.startsWith("Working"));
+    const done = titles.filter((t) => t.startsWith("Worked"));
+    assert(live.length > 0, "no Working samples: " + [...new Set(titles)].join(" | "));
+    assert(done.length === 0 || titles.indexOf(done[0]) === titles.length - 1 || titles.lastIndexOf("Working... · 2 steps") < titles.indexOf(done[0]), "finished early: " + [...new Set(titles)].join(" | "));
+    assert(done.length > 0, "turn never finished: " + titles.slice(-1)[0]);
+    return `${live[0]} -> ${done[done.length - 1]}`;
+  });
+
   console.log("\n================ FEATURE TEST REPORT 8 ================");
   let pass = 0, fail = 0;
   for (const r of report) { console.log(`${r.status === "PASS" ? "PASS" : "FAIL"}  ${r.name.padEnd(36)} ${r.detail}`); r.status === "PASS" ? pass++ : fail++; }

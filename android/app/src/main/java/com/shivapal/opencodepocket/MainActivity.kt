@@ -40,6 +40,100 @@ class MainActivity : AppCompatActivity() {
     /** The bundled daemon runs at this port; existing Termux installs use 4096. */
     private val EMBEDDED_PORT = 4098
 
+    /**
+     * The launch screen. It is native because the WebView cannot load before the
+     * local server exists, so it carries its own copy of the app's typeface:
+     * Android lets a device theme replace the system sans, and the splash used
+     * to render in a handwriting font because of it.
+     */
+    private class Splash(
+        val root: android.widget.LinearLayout,
+        val title: android.widget.TextView,
+        val detail: android.widget.TextView,
+        val bar: android.widget.ProgressBar,
+    )
+
+    private fun buildSplash(): Splash {
+        val face = try {
+            resources.getFont(R.font.pocket_sans)
+        } catch (_: Throwable) {
+            android.graphics.Typeface.SANS_SERIF
+        }
+        val accent = 0xFF4F8DFD.toInt()
+        val pad = (28 * resources.displayMetrics.density).toInt()
+
+        val mark = android.widget.TextView(this).apply {
+            text = "</>"
+            textSize = 20f
+            typeface = android.graphics.Typeface.MONOSPACE
+            gravity = android.view.Gravity.CENTER
+            setTextColor(accent)
+            background = android.graphics.drawable.GradientDrawable().apply {
+                cornerRadius = 16 * resources.displayMetrics.density
+                setColor(0xFF121317.toInt())
+            }
+            layoutParams = android.widget.LinearLayout.LayoutParams(
+                (56 * resources.displayMetrics.density).toInt(),
+                (56 * resources.displayMetrics.density).toInt(),
+            )
+        }
+        val name = android.widget.TextView(this).apply {
+            text = "OpenCode Pocket"
+            textSize = 17f
+            typeface = android.graphics.Typeface.create(face, android.graphics.Typeface.BOLD)
+            setTextColor(0xFFFFFFFF.toInt())
+            gravity = android.view.Gravity.CENTER
+        }
+        val title = android.widget.TextView(this).apply {
+            text = RuntimeStatus.message
+            textSize = 13f
+            typeface = face
+            setTextColor(0xFF8B929C.toInt())
+            gravity = android.view.Gravity.CENTER
+            setPadding(0, (8 * resources.displayMetrics.density).toInt(), 0, 0)
+        }
+        val detail = android.widget.TextView(this).apply {
+            textSize = 12.5f
+            typeface = face
+            setTextColor(0xFF8B929C.toInt())
+            gravity = android.view.Gravity.CENTER
+            visibility = android.view.View.GONE
+            setPadding(0, (10 * resources.displayMetrics.density).toInt(), 0, 0)
+        }
+        val bar = android.widget.ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100
+            progress = 0
+            visibility = android.view.View.INVISIBLE
+            progressTintList = android.content.res.ColorStateList.valueOf(accent)
+            progressBackgroundTintList = android.content.res.ColorStateList.valueOf(0xFF1C1F26.toInt())
+            layoutParams = android.widget.LinearLayout.LayoutParams(
+                (180 * resources.displayMetrics.density).toInt(),
+                (3 * resources.displayMetrics.density).toInt(),
+            ).apply { topMargin = (18 * resources.displayMetrics.density).toInt() }
+        }
+
+        val column = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            gravity = android.view.Gravity.CENTER_HORIZONTAL
+            addView(mark)
+            addView(name, android.widget.LinearLayout.LayoutParams(
+                android.widget.LinearLayout.LayoutParams.WRAP_CONTENT,
+                android.widget.LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply { topMargin = (22 * resources.displayMetrics.density).toInt() })
+            addView(title)
+            addView(bar)
+            addView(detail)
+        }
+        val root = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            gravity = android.view.Gravity.CENTER
+            setBackgroundColor(android.graphics.Color.BLACK)
+            setPadding(pad, pad, pad, pad)
+            addView(column)
+        }
+        return Splash(root, title, detail, bar)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -97,20 +191,23 @@ class MainActivity : AppCompatActivity() {
         // second launch never spawns a second server.
         startService(Intent(this, OpencodeService::class.java))
 
-        val progress = android.widget.TextView(this).apply {
-            text = "Starting OpenCode..."
-            gravity = android.view.Gravity.CENTER
-            setBackgroundColor(android.graphics.Color.BLACK)
-            setTextColor(android.graphics.Color.WHITE)
-            textSize = 16f
+        RuntimeStatus.reset()
+        val splash = buildSplash()
+        addContentView(splash.root, android.widget.FrameLayout.LayoutParams(
+            android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+            android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+        ))
+        // A first run downloads a 124 MB engine. Poll the stage the installer
+        // publishes so the screen reports real progress instead of freezing.
+        val ticker = object : Runnable {
+            override fun run() {
+                splash.title.text = RuntimeStatus.message
+                splash.bar.visibility = if (RuntimeStatus.percent >= 0) android.view.View.VISIBLE else android.view.View.INVISIBLE
+                if (RuntimeStatus.percent >= 0) splash.bar.progress = RuntimeStatus.percent
+                splash.root.postDelayed(this, 400)
+            }
         }
-        addContentView(
-            progress,
-            android.widget.FrameLayout.LayoutParams(
-                android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
-                android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
-            ),
-        )
+        splash.root.post(ticker)
 
         Thread {
             val mode = RuntimeSupervisor.mode(this)
@@ -126,19 +223,25 @@ class MainActivity : AppCompatActivity() {
             }
             val result = live
             runOnUiThread {
+                splash.root.removeCallbacks(ticker)
                 if (result == null) {
-                    progress.text = "Could not start OpenCode.\n\n" +
-                        (RuntimeSupervisor.lastError ?: "") +
-                        "\nTap to retry, or choose Runtime → Termux in Settings."
-                    progress.setOnClickListener { recreate() }
+                    splash.bar.visibility = android.view.View.GONE
+                    splash.title.text = "Could not start OpenCode"
+                    splash.detail.text = (RuntimeSupervisor.lastError ?: "") +
+                        "\nTap to try again, or switch Runtime to Termux in Settings."
+                    splash.detail.visibility = android.view.View.VISIBLE
+                    splash.root.setOnClickListener { recreate() }
                     return@runOnUiThread
                 }
                 // Same-origin routing: the WebView talks only to PocketHttpServer,
                 // which proxies to the selected runtime port.
                 http = PocketHttpServer.instance(this, result.port)
                 if (!http.isRunning) {
-                    progress.text = "Could not open the local UI port.\nTap to retry."
-                    progress.setOnClickListener { recreate() }
+                    splash.bar.visibility = android.view.View.GONE
+                    splash.title.text = "Could not open the local UI port"
+                    splash.detail.text = "Tap to try again."
+                    splash.detail.visibility = android.view.View.VISIBLE
+                    splash.root.setOnClickListener { recreate() }
                     return@runOnUiThread
                 }
                 prefs.edit()
@@ -146,7 +249,7 @@ class MainActivity : AppCompatActivity() {
                     .putString("secret", result.secret)
                     .putString("runtimePort", result.port.toString())
                     .apply()
-                (progress.parent as? android.view.ViewGroup)?.removeView(progress)
+                (splash.root.parent as? android.view.ViewGroup)?.removeView(splash.root)
                 loadShell()
             }
         }.start()
