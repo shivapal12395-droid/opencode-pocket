@@ -970,15 +970,73 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
     return [];
   }
 
-  async mcpServers() {    this.mcpServersCache = this.mcpServersCache ?? [
-      { name: "blender-mcp", title: "Blender", status: { status: "connected" } }, { name: "playwright", title: "Playwright", status: { status: "connected" } }, { name: "tinyfish", title: "TinyFish", status: { status: "connected" } }, { name: "audio", title: "Audio", status: { status: "failed", error: "MCP server process exited with code 2" } }, { name: "godot", title: "Godot", status: { status: "disabled" } }];
-    return clone(this.mcpServersCache);
+  /* ---- MCP: the server's list is the only source of status ---- */
+
+  mcpSeed() {
+    // A demo server is reachable when it points somewhere reachable from the
+    // phone; the rest fail, which is what the real server reports too.
+    this.mcpServersCache = this.mcpServersCache ?? [
+      { name: "blender-mcp", status: { status: "connected" }, reachable: true },
+      { name: "playwright", status: { status: "connected" }, reachable: true },
+      { name: "tinyfish", status: { status: "connected" }, reachable: true },
+      { name: "audio", status: { status: "failed", error: "MCP server process exited with code 2" }, reachable: false },
+      { name: "godot", status: { status: "disabled" }, reachable: true },
+    ];
+    return this.mcpServersCache;
+  }
+
+  async mcpServers() {
+    return clone(this.mcpSeed().map(({ name, status, integrationID }) => ({ name, status, integrationID })));
   }
 
   async mcpAdd(name, config) {
-    this.mcpServersCache = this.mcpServersCache ?? [];
-    this.mcpServersCache.push({ name, title: name, status: { status: "disabled" }, config });
+    // Writing config makes the real server start that process before it answers
+    // (about 9s on the device), so the demo takes a moment too: the progress
+    // state is part of what has to be visible.
+    await new Promise((r) => setTimeout(r, 500));
+    const list = this.mcpSeed();
+    const reachable = config?.type === "local" ? true : /^https?:\/\/(127\.0\.0\.1|localhost)/i.test(config?.url ?? "");
+    const next = reachable
+      ? { name, status: { status: "connected" }, reachable: true }
+      : { name, status: { status: "failed", error: "ECONNREFUSED: Unable to connect. Is the computer able to access the url?" }, reachable: false };
+    // PUT replaces: the same name is the same server.
+    const at = list.findIndex((x) => x.name === name);
+    if (at >= 0) list[at] = next;
+    else list.push(next);
     return { ok: true };
+  }
+
+  async mcpConnect(server) {
+    const s = this.mcpSeed().find((x) => x.name === server);
+    // The real route answers 204 whether or not the connection worked, so a
+    // failed server stays failed here too and the caller has to re-read.
+    if (s) s.status = s.reachable
+      ? { status: "connected" }
+      : { status: "failed", error: "ECONNREFUSED: Unable to connect. Is the computer able to access the url?" };
+    return { ok: true };
+  }
+
+  async mcpDisconnect(server) {
+    const s = this.mcpSeed().find((x) => x.name === server);
+    if (s) s.status = { status: "disabled" };
+    return { ok: true };
+  }
+
+  async mcpRemove(server) {
+    await new Promise((r) => setTimeout(r, 500));
+    this.mcpServersCache = this.mcpSeed().filter((x) => x.name !== server);
+    return { ok: true };
+  }
+
+  async mcpResources() {
+    if (!this.mcpSeed().some((x) => x.status?.status === "connected")) return { resources: [], templates: [] };
+    return {
+      resources: [
+        { uri: "file:///project/README.md", name: "README.md" },
+        { uri: "file:///project/AGENTS.md", name: "AGENTS.md" },
+      ],
+      templates: [{ uriTemplate: "file:///project/{path}", name: "Project files" }],
+    };
   }
 
   async schedules() {
@@ -1183,34 +1241,6 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
 
   async commandAttempt() {
     return { data: { attemptID: "cmd_demo", time: { created: now(), expires: now() + 10 * min } } };
-  }
-
-  /* ---- MCP write paths ---- */
-
-  async mcpConnect(server) {
-    const s = this.mcpServersCache?.find((x) => x.name === server);
-    if (s) s.status = { status: "connected" };
-    return { ok: true };
-  }
-
-  async mcpDisconnect(server) {
-    const s = this.mcpServersCache?.find((x) => x.name === server);
-    if (s) s.status = { status: "disconnected" };
-    return { ok: true };
-  }
-
-  async mcpRemove(server) {
-    return { ok: true };
-  }
-
-  async mcpResources() {
-    return {
-      resources: [
-        { uri: "file:///project/README.md", name: "README.md" },
-        { uri: "file:///project/AGENTS.md", name: "AGENTS.md" },
-      ],
-      templates: [{ uriTemplate: "file:///project/{path}", name: "Project files" }],
-    };
   }
 
   async savedPermissions() {

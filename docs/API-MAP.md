@@ -37,13 +37,16 @@ the app's own WebView over DevTools. Scripts live outside the repo, in
 
 | Feature | Source | Method | Verdict |
 | --- | --- | --- | --- |
-| List servers + status | server | `GET /api/mcp` | supported (`[]` right now — real empty state) |
-| Resources + templates | server | `GET /api/mcp/resource` | supported |
-| Add / edit a server | server | `PUT /api/experimental/mcp/{name}` `{config:{…}}` | supported — a bare body fails with `Missing key ["config"]`, so the config object is the payload |
-| Remove a server | server | `DELETE /api/experimental/mcp/{name}` | supported (404 for an unknown name, i.e. the route is live) |
-| Connect | server | `POST /api/experimental/mcp/{name}/connect` | supported |
-| Disconnect | server | `POST /api/experimental/mcp/{name}/disconnect` | supported |
+| List servers + status | server | `GET /api/mcp` | supported (`[]` when nothing is configured - a real empty state). Each item is `{name, status:{status,error}, integrationID}`: **no config is returned** |
+| Resources + templates | server | `GET /api/mcp/resource` | supported - `{resources, templates}`, empty until a server is connected |
+| Add a server | server | `PUT /api/experimental/mcp/{name}` `{config:{…}}` | supported - a bare body fails with `Missing key ["config"]`, so the config object is the payload. **Takes ~9-10 s**: the server starts the process before it answers, so the UI must show progress |
+| Replace a server's config | server | same `PUT` with the same name | supported - it replaces, it does not duplicate. The old config cannot be read back, so this is a replace, not a pre-filled edit |
+| Remove a server | server | `DELETE /api/experimental/mcp/{name}` | supported (404 for an unknown name, i.e. the route is live). Fast once the server has settled |
+| Connect | server | `POST /api/experimental/mcp/{name}/connect` | supported, **and it answers 204 even when the connection failed** - read `GET /api/mcp` afterwards for the truth (`pending` while it tries, then `failed` + `error`) |
+| Disconnect | server | `POST /api/experimental/mcp/{name}/disconnect` | supported (`disabled`) |
 | Transports | server | local (`command`, `environment`) and remote (`url`, `headers`) | supported |
+| Observed statuses | server | - | `connected`, `pending`, `failed` (+ `error`), `disabled`, `needs_auth` |
+| Config file | workspace | `.config/opencode/` | the directory exists but holds no file on this device, so the server keeps MCP config elsewhere; `GET /api/mcp` is the only window into it |
 
 ## 3. Plugins
 

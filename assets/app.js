@@ -4311,22 +4311,143 @@ function openAccountSheet() {
   });
 }
 
+/* --------------------------------------------------------------------- MCP
+ * The server owns MCP config; Pocket reads the list and forwards writes. The
+ * list is the only honest source of status: POST .../connect answers 204 even
+ * when the connection failed, so every action re-reads the list and reports
+ * what it says rather than claiming success.
+ */
+
+/** Normalised status string for one MCP server, as the server reports it. */
+function mcpStatus(server) {
+  const raw = server?.status?.status ?? server?.status?.state ?? "unknown";
+  return String(raw).toLowerCase();
+}
+
+function mcpConnected(server) {
+  return /^(connected|active|running|ready)$/.test(mcpStatus(server));
+}
+
+/** One line a reader can act on: the real error when there is one. */
+function mcpStateLabel(server) {
+  const state = mcpStatus(server);
+  const err = server?.status?.error;
+  if (err) return String(err).replace(/\s+/g, " ").trim();
+  if (state === "disabled") return "Disabled";
+  if (state === "needs_auth") return "Needs authentication";
+  if (state === "pending" || state === "connecting") return "Connecting...";
+  if (mcpConnected(server)) return "Connected";
+  if (state === "unknown" || state === "not_found") return "No status reported yet";
+  return state;
+}
+
+/** A server name becomes a path segment, so keep it to something that can be one. */
+function validMcpName(name) {
+  return /^[A-Za-z0-9._-]{1,64}$/.test(String(name ?? "").trim());
+}
+
+const shortText = (v, n = 70) => {
+  const t = String(v ?? "").replace(/\s+/g, " ").trim();
+  return t.length > n ? t.slice(0, n - 1) + "\u2026" : t;
+};
+
 async function mcpAction(server, action) {
   try {
     if (action === "connect") {
-      toast("Connecting to " + server + "…");
+      toast(`Connecting to ${server}...`);
       await state.api.mcpConnect(server);
-      toast("Connected to " + server);
-    } else if (action === "disconnect") {
+    } else {
+      toast(`Disconnecting ${server}...`);
       await state.api.mcpDisconnect(server);
-      toast("Disconnected from " + server);
-    } else if (action === "remove") {
-      await state.api.mcpRemove(server);
-      toast("Removed " + server);
     }
-    openMcpSheet();
+    // One read serves both the list and the verdict. The calls above answer 204
+    // whether or not the connection worked, and asking the server for a status
+    // can take a moment while it starts the new process, so the list goes up
+    // first and the toast says what the list then showed.
+    const servers = await openMcpSheet().catch(() => []);
+    const now = (servers ?? []).find((x) => (x.name || x.title) === server);
+    if (action === "connect") {
+      if (now && mcpConnected(now)) toast(`Connected to ${server}`);
+      else toast(shortText(`${server}: ${mcpStateLabel(now ?? {})}`));
+    } else if (now && !mcpConnected(now)) {
+      toast(`Disconnected from ${server}`);
+    } else {
+      toast(`${server} is still connected`);
+    }
   } catch (err) {
     handleError(err, "Could not " + action + " " + server);
+  }
+}
+
+/**
+ * A sheet that says what is happening while a slow call runs. Writing an MCP
+ * server's config makes the server start that process first: PUT took ~9s on
+ * the device, and a button that looks dead for that long reads as broken.
+ */
+function busySheet(title, note) {
+  openSheet({
+    kind: "busy",
+    title,
+    body: (root) => {
+      root.innerHTML =
+        '<div class="empty"><span class="spinner" style="margin:0 auto 12px"></span>' +
+        '<p class="sheet-note" style="text-align:center">' + escapeHtml(note ?? "") + "</p></div>";
+    },
+  });
+}
+
+/** Confirmation that reads like a sentence and answers with a boolean. */
+function confirmSheet({ title, note, confirmLabel = "Confirm", danger = false, kind = null }) {
+  return new Promise((resolve) => {
+    openSheet({
+      kind,
+      title,
+      onClose: () => resolve(false),
+      body: (root) => {
+        root.innerHTML =
+          `<p class="sheet-note">${escapeHtml(note ?? "")}</p>` +
+          `<div class="permission-actions"><button class="btn btn-ghost" data-cancel>Cancel</button>` +
+          `<button class="btn ${danger ? "btn-danger" : "btn-primary"}" data-confirm>${escapeHtml(confirmLabel)}</button></div>`;
+        root.addEventListener("click", (e) => {
+          // Neither answer closes the sheet: the caller swaps in whatever comes
+          // next. Calling closeSheet() here raced the history entry it pushes,
+          // and the popstate landed on the screen the caller had just opened.
+          if (e.target.closest("[data-cancel]")) {
+            resolve(false);
+            return;
+          }
+          if (e.target.closest("[data-confirm]")) {
+            state.sheetOnClose = null;
+            resolve(true);
+          }
+        });
+      },
+    });
+  });
+}
+
+async function removeMcpServer(server) {
+  const ok = await confirmSheet({
+    title: `Remove ${server}?`,
+    note: "Deletes this server's configuration on your OpenCode server. Nothing else is touched.",
+    confirmLabel: "Remove server",
+    danger: true,
+    kind: "mcp-remove",
+  });
+  if (!ok) {
+    openMcpSheet();
+    return;
+  }
+  try {
+    // DELETE is slow for the same reason PUT is; say so instead of leaving the
+    // confirmation on screen looking stuck.
+    busySheet("Removing server", `${server} is being removed on your OpenCode server...`);
+    await state.api.mcpRemove(server);
+    await openMcpSheet();
+    toast(`Removed ${server}`);
+  } catch (err) {
+    handleError(err, "Could not remove " + server);
+    openMcpSheet();
   }
 }
 
@@ -4335,12 +4456,12 @@ async function openMcpResources() {
     kind: "mcp-resources",
     title: "MCP resources",
     body: async (root) => {
-      root.innerHTML = '<p class="sheet-note">Loading…</p>';
+      root.innerHTML = '<p class="sheet-note">Loading...</p>';
       try {
         const cat = await state.api.mcpResources();
         const items = [...(cat.resources ?? []), ...(cat.templates ?? [])];
         root.innerHTML = items.length
-          ? '<div class="sheet-list">' +
+          ? '<p class="sheet-note">What the connected servers expose to the agent.</p><div class="sheet-list">' +
             items
               .map(
                 (r) =>
@@ -4350,7 +4471,11 @@ async function openMcpResources() {
               )
               .join("") +
             "</div>"
-          : '<p class="sheet-note">No resources are exposed by the connected servers.</p>';
+          : '<p class="sheet-note">No resources: resources are published by connected servers, and none of them is offering any right now. Tools still work - resources are extra.</p>' +
+            '<div class="prefs-foot"><button class="btn btn-ghost" data-mcp-back>Back to servers</button></div>';
+        root.addEventListener("click", (e) => {
+          if (e.target.closest("[data-mcp-back]")) openMcpSheet();
+        });
       } catch (err) {
         root.innerHTML = '<p class="sheet-note">' + escapeHtml(err.message || "Could not load resources") + "</p>";
       }
@@ -4386,7 +4511,16 @@ function renderTodos() {
     `</div>`;
 }
 
+/**
+ * List the MCP servers and return the same list it painted, so a caller can
+ * report the outcome without asking the server a second time. Reading the list
+ * is not instant right after a change - the server starts the new process - so
+ * the sheet goes up first and its promise carries the verdict.
+ */
 function openMcpSheet() {
+  const loading = Promise.resolve()
+    .then(() => state.api.mcpServers({ directory: workspaceDir() }))
+    .then((list) => list ?? []);
   openSheet({
     kind: "mcp",
     title: "MCP servers",
@@ -4394,69 +4528,84 @@ function openMcpSheet() {
       root.innerHTML = '<p class="sheet-note">Loading...</p>';
       let servers = [];
       try {
-        servers = await state.api.mcpServers({ directory: workspaceDir() });
+        servers = await loading;
       } catch (err) {
-        root.innerHTML = '<p class="sheet-note">' + escapeHtml(err.message || "Could not load servers") + "</p>";
+        root.innerHTML = '<p class="sheet-note">' + escapeHtml(err.message || "Could not load MCP servers") + "</p>";
         return;
       }
-      if (!servers.length) {
-        root.innerHTML = '<p class="sheet-note">No MCP servers configured for this project.</p>' +
-          '<div class="prefs-foot"><button class="btn btn-primary" data-mcp-add>Add custom MCP server</button></div>';
-        root.addEventListener("click", (e) => {
-          if (e.target.closest("[data-mcp-add]")) openAddMcp();
-        });
-        return;
-      }
+      const up = servers.filter(mcpConnected).length;
+      const head = servers.length
+        ? `<p class="sheet-note">${servers.length} server${servers.length === 1 ? "" : "s"}, ${up} connected. The configuration lives on your OpenCode server; Pocket reads the list and forwards changes.</p>`
+        : "";
+      const rows = servers
+        .map((s) => {
+          const name = s.name || s.title || "";
+          const state = mcpStatus(s);
+          const isUp = mcpConnected(s);
+          return (
+            `<div class="mcp-row" data-server="${escapeHtml(name)}">` +
+            `<div class="sheet-item"><span class="dot-status" data-s="${escapeHtml(state)}"></span>` +
+            `<span class="si-text"><span class="si-title">${escapeHtml(name)}</span>` +
+            `<span class="si-sub">${escapeHtml(mcpStateLabel(s))}</span></span></div>` +
+            `<div class="mcp-actions">` +
+            `<button data-mcp="${isUp ? "disconnect" : "connect"}" data-server="${escapeHtml(name)}">${isUp ? "Disconnect" : "Connect"}</button>` +
+            `<button data-mcp="edit" data-server="${escapeHtml(name)}">Replace config</button>` +
+            `<button data-mcp="remove" data-server="${escapeHtml(name)}">Remove</button>` +
+            `</div></div>`
+          );
+        })
+        .join("");
       root.innerHTML =
-        '<p class="sheet-note">Connect, disconnect or remove a server. The server keeps the config.</p><div class="sheet-list">' +
-        servers
-          .map((s) => {
-            const name = s.name || s.title;
-            const status = s.status?.status ?? "unknown";
-            const detail = s.status?.error ? String(s.status.error).slice(0, 100) : status;
-            const connected = /^(connected|active|running|ready)$/i.test(status);
-            return (
-              '<div class="mcp-row"><div class="sheet-item"><span class="dot-status" data-s="' + escapeHtml(status) + '"></span>' +
-              '<span class="si-text"><span class="si-title">' + escapeHtml(s.title || s.name) + "</span>" +
-              '<span class="si-sub">' + escapeHtml(detail) + "</span></span></div>" +
-              '<div class="mcp-actions">' +
-              (connected
-                ? '<button data-mcp="disconnect" data-server="' + escapeHtml(name) + '">Disconnect</button>'
-                : '<button data-mcp="connect" data-server="' + escapeHtml(name) + '">Connect</button>') +
-              '<button data-mcp="remove" data-server="' + escapeHtml(name) + '">Remove</button>' +
-              "</div></div>"
-            );
-          })
-          .join("") +
-        "</div>" +
-        '<div class="prefs-foot"><button class="btn btn-primary" data-mcp-add>Add custom MCP server</button> <button class="btn btn-ghost" data-mcp-resources>View resources</button></div>';
+        head +
+        (servers.length
+          ? `<div class="sheet-list">${rows}</div>`
+          : '<p class="sheet-note">No MCP server is configured for this project. Add one below - the server keeps it and reports its real status here.</p>') +
+        '<div class="prefs-foot"><button class="btn btn-primary" data-mcp-add>Add MCP server</button>' +
+        '<button class="btn btn-ghost" data-mcp-resources>Resources</button></div>' +
+        '<p class="sheet-note" style="margin-top:10px">Servers added here are written to your OpenCode config. A server that fails to connect keeps its row, with the reason.</p>';
       root.addEventListener("click", (e) => {
-        const btn = e.target.closest("[data-mcp]");
-        if (btn) return mcpAction(btn.dataset.server, btn.dataset.mcp);
-        if (e.target.closest("[data-mcp-add]")) return openAddMcp();
+        if (e.target.closest("[data-mcp-add]")) return openMcpForm(null);
         if (e.target.closest("[data-mcp-resources]")) return openMcpResources();
+        const btn = e.target.closest("[data-mcp]");
+        if (!btn) return;
+        const name = btn.dataset.server;
+        if (btn.dataset.mcp === "edit") return openMcpForm(name);
+        if (btn.dataset.mcp === "remove") return removeMcpServer(name);
+        return mcpAction(name, btn.dataset.mcp);
       });
     },
   });
+  return loading;
 }
 
-function openAddMcp() {
+/** Add a server, or replace the configuration of one that exists. */
+function openMcpForm(server = null) {
+  const editing = !!server;
   openSheet({
     kind: "mcp-add",
-    title: "Add MCP server",
+    title: editing ? `Replace ${server} config` : "Add MCP server",
     body: (root) => {
-      root.innerHTML = `<p class="sheet-note">Remote = HTTP URL · Local = command on the device. The server owns the config; Pocket only forwards it.</p>
+      root.innerHTML = `<p class="sheet-note">${
+        editing
+          ? `The server does not expose a saved configuration, so this replaces it in full. The name stays <b>${escapeHtml(server)}</b>.`
+          : "Remote is an HTTP endpoint. Local is a command your server runs. The server owns the config and reports the real status."
+      }</p>
         <div class="seg" id="mcp-kind"><button data-k="remote" class="on">Remote</button><button data-k="local">Local</button></div>
-        <label class="field"><span class="label">Name</span><input class="input" id="mcp-name" placeholder="my-server"></label>
+        <label class="field"><span class="label">Name</span><input class="input" id="mcp-name" placeholder="my-server" value="${
+          editing ? escapeHtml(server) : ""
+        }"${editing ? " disabled" : ""}></label>
         <div id="mcp-remote">
           <label class="field"><span class="label">URL</span><input class="input" id="mcp-url" placeholder="https://example.com/mcp"></label>
-          <label class="field"><span class="label">Headers (JSON, optional)</span><input class="input" id="mcp-headers" placeholder='{"Authorization":"Bearer …"}'></label>
+          <label class="field"><span class="label">Headers (JSON, optional)</span><input class="input" id="mcp-headers" placeholder='{"Authorization":"Bearer ..."}'></label>
         </div>
         <div id="mcp-local" hidden>
           <label class="field"><span class="label">Command + args</span><input class="input" id="mcp-command" placeholder="npx -y @modelcontextprotocol/server-filesystem /tmp"></label>
           <label class="field"><span class="label">Environment (JSON, optional)</span><input class="input" id="mcp-env" placeholder='{"KEY":"value"}'></label>
         </div>
-        <button class="btn btn-primary btn-block" id="mcp-save" style="margin-top:12px">Add server</button>`;
+        <button class="btn btn-primary btn-block" id="mcp-save" style="margin-top:12px">${
+          editing ? "Replace configuration" : "Add server"
+        }</button>
+        <button class="btn btn-ghost btn-block" id="mcp-cancel" style="margin-top:8px">Cancel</button>`;
       let kind = "remote";
       $("#mcp-kind", root).addEventListener("click", (e) => {
         const b = e.target.closest("[data-k]");
@@ -4466,25 +4615,48 @@ function openAddMcp() {
         $("#mcp-remote", root).hidden = kind !== "remote";
         $("#mcp-local", root).hidden = kind !== "local";
       });
-      const json = (v, fallback) => {
-        if (!v?.trim()) return fallback;
-        try { return JSON.parse(v); } catch { return fallback; }
+      $("#mcp-cancel", root).addEventListener("click", () => openMcpSheet());
+      const parse = (v) => {
+        if (!v?.trim()) return { ok: true, value: {} };
+        try {
+          const value = JSON.parse(v);
+          if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false };
+          return { ok: true, value };
+        } catch {
+          return { ok: false };
+        }
       };
       $("#mcp-save", root).addEventListener("click", async () => {
-        const name = $("#mcp-name", root).value.trim();
-        if (!name) return toast("Give the server a name");
-        const config = kind === "remote"
-          ? { type: "remote", url: $("#mcp-url", root).value.trim(), headers: json($("#mcp-headers", root).value, {}) }
-          : { type: "local", command: $("#mcp-command", root).value.trim().split(/\s+/), environment: json($("#mcp-env", root).value, {}) };
-        if (kind === "remote" && !config.url) return toast("Enter the server URL");
-        if (kind === "local" && !config.command.length) return toast("Enter a command");
+        const name = ($("#mcp-name", root).value || server || "").trim();
+        if (!validMcpName(name)) return toast("Use letters, numbers, dots, dashes or underscores");
+        const headers = parse($("#mcp-headers", root).value);
+        const env = parse($("#mcp-env", root).value);
+        const url = ($("#mcp-url", root).value || "").trim();
+        const command = ($("#mcp-command", root).value || "").trim().split(/\s+/).filter(Boolean);
+        if (kind === "remote" && !/^https?:\/\//i.test(url)) return toast("Enter an http(s) URL");
+        if (kind === "local" && !command.length) return toast("Enter a command");
+        if (!headers.ok || !env.ok) return toast("Headers and environment must be JSON objects");
+        const config =
+          kind === "remote"
+            ? { type: "remote", url, headers: headers.value }
+            : { type: "local", command, environment: env.value };
+        const save = $("#mcp-save", root);
+        const label = save.textContent;
+        save.disabled = true;
+        save.textContent = editing ? "Replacing..." : "Saving...";
         try {
           await state.api.mcpAdd(name, config);
-          closeSheet();
-          toast(`Added ${name}`);
-          setTimeout(() => openMcpSheet(), 300);
+          haptic(10);
+          // The list goes up first: reading it right after a change can take a
+          // moment, and the form must not sit there looking stuck.
+          const servers = await openMcpSheet().catch(() => []);
+          const now = (servers ?? []).find((x) => (x.name || x.title) === name);
+          toast(shortText(`${editing ? "Replaced" : "Added"} ${name}: ${now ? mcpStateLabel(now) : "no status reported"}`));
         } catch (err) {
-          handleError(err, "Could not add MCP server");
+          // Keep the form (and what was typed) when the write fails.
+          save.disabled = false;
+          save.textContent = label;
+          handleError(err, "Could not save MCP server");
         }
       });
     },
