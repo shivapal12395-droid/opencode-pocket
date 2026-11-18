@@ -943,6 +943,21 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
   async integrations() {
     return [
       {
+        id: "opencode",
+        name: "OpenCode Console",
+        methods: [
+          { type: "key", label: "API key (service account)" },
+          { type: "env", names: ["OPENCODE_API_KEY"] },
+          {
+            id: "device",
+            type: "oauth",
+            label: "OpenCode Console account",
+            form: [{ key: "server", hidden: true, type: "string", format: "uri", default: "https://opencode.ai/console" }],
+          },
+        ],
+        connections: [],
+      },
+      {
         id: "anthropic",
         name: "Anthropic",
         methods: [
@@ -975,6 +990,15 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
     ];
   }
 
+  async integration(id) {
+    const list = await this.integrations();
+    const it = list.find((x) => x.id === id) ?? null;
+    if (!it) return null;
+    // The demo account signs in and out like the real one.
+    if (id === "opencode") return { ...it, connections: this.opencodeConn ? [this.opencodeConn] : [] };
+    return it;
+  }
+
   async credentials() {
     return [
       {
@@ -993,6 +1017,18 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
   }
 
   async connectOAuth(id, methodID) {
+    if (id === "opencode" && methodID === "device") {
+      this.oauthPolls = 0;
+      return {
+        data: {
+          attemptID: "con_demo_" + this.seq++,
+          url: "https://opencode.ai/console/device?user_code=DEMO-CODE&client_id=opencode-cli",
+          instructions: "Enter code: DEMO-CODE",
+          mode: "auto",
+          time: { created: now(), expires: now() + 10 * min },
+        },
+      };
+    }
     return {
       data: {
         attemptID: "attempt_" + this.seq++,
@@ -1022,10 +1058,19 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
   }
 
   async deleteCredential(id) {
+    if (String(id).startsWith("conn_demo")) this.opencodeConn = null;
     return { ok: true };
   }
 
-  async oauthAttempt() {
+  async oauthAttempt(id, attemptID) {
+    if (String(attemptID ?? "").startsWith("con_demo_")) {
+      this.oauthPolls = (this.oauthPolls ?? 0) + 1;
+      if (this.oauthPolls >= 2) {
+        this.opencodeConn = { id: "conn_demo", type: "oauth", label: "Pocket", method: "device" };
+        return { data: { status: "complete", time: { created: now(), expires: now() + 10 * min } } };
+      }
+      return { data: { status: "pending", time: { created: now(), expires: now() + 10 * min } } };
+    }
     return { data: { status: "pending", time: { created: now(), expires: now() + 10 * min } } };
   }
 

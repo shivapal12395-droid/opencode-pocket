@@ -243,6 +243,57 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     return `${info.rows.length} artifacts: ${info.rows.slice(0, 2).join(", ")}`;
   });
 
+  await test("OpenCode account: device sign-in, then sign out", async () => {
+    // The real flow is a device-code OAuth attempt against the opencode
+    // integration: start -> code + URL -> poll -> connection -> sign out.
+    await page.evaluate(() => document.querySelector("#sheet-close")?.click());
+    await sleep(300);
+    await page.evaluate(() => document.querySelector("#chat-back")?.click());
+    await sleep(400);
+    await page.click("#open-sidebar");
+    await sleep(400);
+    await page.click("#side-avatar");
+    await sleep(700);
+    const signedOut = await page.evaluate(() => ({
+      title: document.querySelector("#sheet-title")?.textContent?.trim() ?? "",
+      login: document.querySelector('[data-acct="login"]')?.textContent?.trim() ?? "",
+      state: document.querySelector(".account-text")?.innerText?.replace(/\s+/g, " ").trim() ?? "",
+    }));
+    assert(signedOut.title === "OpenCode account", "title=" + signedOut.title);
+    assert(/Log in to OpenCode/.test(signedOut.login), "no login button");
+    assert(/Not signed in/.test(signedOut.state), "state=" + signedOut.state);
+
+    await page.click('[data-acct="login"]');
+    await sleep(900);
+    const waiting = await page.evaluate(() => ({
+      code: document.querySelector(".device-code")?.textContent?.trim() ?? "",
+      note: document.querySelector("#sheet-body .sheet-note")?.textContent?.trim() ?? "",
+      waiting: /Waiting for approval/.test(document.querySelector("#sheet-body")?.innerText ?? ""),
+      open: !!document.querySelector('[data-acct="open"]'),
+    }));
+    assert(waiting.code === "DEMO-CODE", "code=" + waiting.code);
+    assert(waiting.waiting, "no waiting state");
+    assert(waiting.open, "no open-in-browser button");
+
+    // Demo completes on the second poll (~5s).
+    let connected = null;
+    for (let i = 0; i < 20; i++) {
+      await sleep(700);
+      connected = await page.evaluate(() => document.querySelector(".account-text")?.innerText?.replace(/\s+/g, " ").trim() ?? "");
+      if (/Signed in/.test(connected)) break;
+    }
+    assert(/Signed in/.test(connected), "never signed in: " + connected);
+
+    await page.click('[data-acct="out"]');
+    await sleep(500);
+    await page.click("[data-confirm]");
+    await sleep(900);
+    const after = await page.evaluate(() => document.querySelector(".account-text")?.innerText?.replace(/\s+/g, " ").trim() ?? "");
+    assert(/Not signed in/.test(after), "after sign out: " + after);
+    await page.evaluate(() => document.querySelector("#sheet-close")?.click());
+    return "device code -> signed in -> signed out";
+  });
+
   console.log("\n================ FEATURE TEST REPORT 8 ================");
   let pass = 0, fail = 0;
   for (const r of report) { console.log(`${r.status === "PASS" ? "PASS" : "FAIL"}  ${r.name.padEnd(36)} ${r.detail}`); r.status === "PASS" ? pass++ : fail++; }

@@ -252,6 +252,7 @@ MCP write paths and the task checklist.
 | PTY terminal | **part** - one-shot shell command from the session menu; persistent PTY endpoints exist upstream but need a WebSocket client |
 | Line-level diff comments | **no** - no upstream endpoint in v2.3.0's OpenAPI |
 | Config editor | **no** - `PATCH /api/experimental/config` only accepts `shell` in v2.3.0 |
+| OpenCode account sign-in | **yes** - `POST /api/integration/opencode/connect/oauth` with the `device` method: the sheet shows the real code and expiry, opens `opencode.ai/console` in the browser, polls the attempt until approved, then reports the connection from `/api/integration/opencode`; API-key method and sign-out included |
 | Instructions viewer | **yes** - `/api/experimental/session/{id}/instructions/entries` |
 | Plugins | **yes** - `/api/plugin` list with source and state; each entry is what the server actually loaded |
 | Scheduled tasks | **yes** - create (every/at/cron), list, pause, resume, remove via `/api/experimental/schedule`; the server's `experimental.schedules` flag is reported as a plain note when it is off |

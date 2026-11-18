@@ -442,6 +442,12 @@ export class Api {
     return res?.data ?? [];
   }
 
+  /** One integration by id, with its connect methods and live connections. */
+  async integration(id) {
+    const res = await this.request("GET", `/api/integration/${encodeURIComponent(id)}`, undefined, { timeout: 20000 });
+    return res?.data ?? res ?? null;
+  }
+
   connectKey(id, key, { label, answer } = {}) {
     return this.request("POST", `/api/integration/${id}/connect/key`, { key, label, answer });
   }

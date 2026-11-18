@@ -71,6 +71,7 @@ No phone, no server, no account: **[open the demo](https://shivapal12395-droid.g
 - **Artifacts** — a generated file, page, diagram or long document becomes a card in the transcript that opens full screen: preview and code tabs, line numbers, wrap, copy, save. HTML runs in a sandboxed frame with no access to this app or its password.
 - **Questions from the agent** — the `question` tool arrives as a form with choices, free text, multiselect and conditional fields; answering it unblocks the turn.
 - **Queue or steer** — while a turn runs, the composer picks between joining it and waiting; queued prompts show above the composer and can be cancelled or re-aimed.
+- **OpenCode account** — sign in with your own OpenCode Console account from the sidebar profile (device-code OAuth: a code, the console link, live approval), or paste a service-account key. Your plan's models and credits are used; the credential is stored by the OpenCode server on the phone, and Sign out removes it. If the connection comes from the host's environment, the app says so instead of pretending.
 - **Provider login** — connect API keys, start and finish OAuth, or run a command login from the Connections sheet. Credentials stay on the server.
 - **Provider catalog** — live models.dev list with brand-coloured logos, search and free-model counts; pick a default model without opening the terminal.
 - **MCP controls** — connect, disconnect and remove servers, add remote or local custom servers, and browse the resources they expose.

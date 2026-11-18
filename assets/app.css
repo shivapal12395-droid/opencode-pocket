@@ -1376,6 +1376,27 @@ button.setting-row { width: 100%; text-align: left; background: none; border: 0;
   border: 1px solid var(--line); border-radius: 12px;
   margin: 0 0 10px; overflow: hidden;
 }
+
+/* ---- account sheet ---- */
+.account-card {
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 12px; border: 1px solid var(--line); border-radius: 14px;
+  background: var(--soft); margin: 0 0 12px;
+}
+.account-avatar {
+  width: 40px; height: 40px; flex: none; border-radius: 99px;
+  display: grid; place-items: center; background: var(--accent-soft); color: var(--accent);
+}
+.account-avatar svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.account-text { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.account-text b { font-size: 14px; font-weight: 600; color: var(--text); }
+.account-text span { font-size: 11.5px; color: var(--muted); }
+.device-code {
+  margin: 6px 0 14px; padding: 16px 10px; text-align: center;
+  font-family: var(--mono); font-size: 27px; font-weight: 650; letter-spacing: 0.16em;
+  color: var(--text); background: var(--soft); border: 1px solid var(--line); border-radius: 14px;
+  user-select: all; -webkit-user-select: all;
+}
 .auth-provider-head { padding: 11px 12px 4px; }
 .auth-provider-head .si-title,
 .auth-provider-head .si-sub,

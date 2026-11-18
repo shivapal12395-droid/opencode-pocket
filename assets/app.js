@@ -257,7 +257,7 @@ function bindSidebar() {
   });
   $("#side-avatar")?.addEventListener("click", () => {
     sidebarClose();
-    openSettings();
+    openAccountSheet();
   });
 
   $("#sidebar")?.addEventListener("click", async (e) => {
@@ -3915,6 +3915,292 @@ async function openAuthSheet() {
  * routes, and the resource catalog is read-only.
  */
 
+/* ---------------------------------------------------------------- account
+ * Signing in with your own OpenCode Console account is a device-code OAuth
+ * flow: the server starts an attempt, prints a URL and a code, and the browser
+ * approves it. The credential lives on the OpenCode server in this phone's app
+ * storage, never in the web layer.
+ */
+
+const OPENCODE_INTEGRATION = "opencode";
+const OPENCODE_SERVER = "https://opencode.ai/console";
+
+function accountCode(instructions) {
+  const m = String(instructions ?? "").match(/([A-Z0-9]{4,}(?:-[A-Z0-9]{4,})+)/);
+  return m ? m[1] : "";
+}
+
+function openAccountSheet() {
+  // The polling attempt lives outside the sheet body so closing the sheet can
+  // always cancel it, whichever way the sheet is dismissed.
+  let poll = 0;
+  let attemptID = null;
+  const stop = () => {
+    if (poll) clearInterval(poll);
+    poll = 0;
+  };
+  const cancelAttempt = () => {
+    stop();
+    if (attemptID) state.api.cancelOAuth(OPENCODE_INTEGRATION, attemptID).catch(() => {});
+    attemptID = null;
+  };
+
+  openSheet({
+    kind: "account",
+    title: "OpenCode account",
+    onClose: cancelAttempt,
+    body: (root) => {
+      const signedOut = async () => {
+        stop();
+        root.innerHTML = '<p class="sheet-note">Checking this server...</p>';
+        let conns = [];
+        let saved = [];
+        try {
+          const info = await state.api.integration(OPENCODE_INTEGRATION);
+          conns = info?.connections ?? [];
+          const creds = await state.api.credentials();
+          saved = (creds ?? []).filter((c) => c.integrationID === OPENCODE_INTEGRATION);
+        } catch (err) {
+          root.innerHTML = `<p class="sheet-note">${escapeHtml(err.message || "Could not read the account state")}</p>`;
+          return;
+        }
+        const live = conns[0] ?? saved[0] ?? null;
+        if (live) {
+          const label = live.label || live.name || live.id || "OpenCode account";
+          const kind = live.type ? String(live.type) : live.method ? String(live.method) : "account";
+          root.innerHTML = `
+            <div class="account-card">
+              <div class="account-avatar">${icon("spark")}</div>
+              <div class="account-text">
+                <b>${escapeHtml(label)}</b>
+                <span>Signed in · ${escapeHtml(kind)}</span>
+              </div>
+            </div>
+            <p class="sheet-note">Requests use this account's credits. The credential is stored by the OpenCode server in this phone's app storage.</p>
+            <div class="sheet-list">
+              ${sheetRow({ iconName: "cpu", title: "Models", sub: "What this account can reach", attrs: "data-acct=models" })}
+              ${sheetRow({ iconName: "trash", title: "Sign out", sub: "Remove the account from this server", danger: true, attrs: "data-acct=out" })}
+            </div>`;
+          return;
+        }
+        root.innerHTML = `
+          <div class="account-card">
+            <div class="account-avatar">${icon("spark")}</div>
+            <div class="account-text">
+              <b>Not signed in</b>
+              <span>Running on the free default models</span>
+            </div>
+          </div>
+          <p class="sheet-note">Sign in with your own OpenCode Console account to run on your plan's models and credits. The browser one-time code is approved on opencode.ai; nothing is stored in this app.</p>
+          <button class="btn btn-primary btn-block" data-acct="login" style="margin-top:12px">Log in to OpenCode</button>
+          <div class="sheet-list" style="margin-top:12px">
+            ${sheetRow({ iconName: "key", title: "Use an API key", sub: "Service account key instead of sign-in", attrs: "data-acct=key" })}
+            ${sheetRow({ iconName: "key", title: "All connections", sub: "Other providers and saved keys", attrs: "data-acct=conns" })}
+          </div>
+          <p class="sheet-note" style="margin-top:12px">Approve at <b>opencode.ai/console</b> — the code below is yours alone.</p>`;
+      };
+
+      const waiting = (data) => {
+        const code = accountCode(data.instructions);
+        const expires = data.time?.expires ? new Date(data.time.expires) : null;
+        root.innerHTML = `
+          <p class="sheet-note">${escapeHtml(data.instructions || "Enter the code on the OpenCode site.")}</p>
+          <div class="device-code">${escapeHtml(code || "—")}</div>
+          <button class="btn btn-primary btn-block" data-acct="open">Open opencode.ai/console</button>
+          <p class="sheet-note" style="margin-top:14px" id="acct-wait"><span class="typing"><i></i><i></i><i></i></span> Waiting for approval${
+            expires ? ` · code valid until ${expires.toLocaleTimeString()}` : ""
+          }</p>
+          <div class="permission-actions">
+            <button class="btn btn-ghost" data-acct="cancel">Cancel</button>
+          </div>`;
+      };
+
+      const fail = (message) => {
+        stop();
+        root.innerHTML = `<p class="sheet-note">${escapeHtml(message)}</p>
+          <button class="btn btn-primary btn-block" data-acct="login" style="margin-top:12px">Try again</button>`;
+      };
+
+      const finish = async (data) => {
+        stop();
+        // The attempt id is enough for a retry, but the credential is what the
+        // model picker reads, so confirm it exists before claiming success.
+        let conns = [];
+        try {
+          const info = await state.api.integration(OPENCODE_INTEGRATION);
+          conns = info?.connections ?? [];
+        } catch (_) {
+          /* fall through to the status message */
+        }
+        if (!conns.length) {
+          fail(data?.error?.message || "Approval finished but the server reports no connection. Try again.");
+          return;
+        }
+        state.models = null;
+        ensureModels().catch(() => {});
+        haptic(12);
+        toast("Signed in to OpenCode");
+        signedOut();
+      };
+
+      const startLogin = async () => {
+        stop();
+        root.innerHTML = '<p class="sheet-note">Asking the server for a sign-in code...</p>';
+        try {
+          const res = await state.api.connectOAuth(OPENCODE_INTEGRATION, "device", {
+            label: "Pocket",
+            answer: { server: OPENCODE_SERVER },
+          });
+          const data = res?.data ?? res ?? {};
+          attemptID = data.attemptID;
+          if (!data.url || !attemptID) throw new Error("The server did not return a sign-in code");
+          waiting(data);
+          let polls = 0;
+          poll = setInterval(async () => {
+            polls++;
+            try {
+              const cur = await state.api.oauthAttempt(OPENCODE_INTEGRATION, attemptID);
+              const d = cur?.data ?? cur ?? {};
+              const status = String(d.status ?? "");
+              if (status && !/pending|waiting|started/i.test(status)) {
+                if (/fail|error|denied|expired/i.test(status)) {
+                  fail(d.error?.message || `Sign-in ${status}`);
+                } else {
+                  await finish(d);
+                }
+              } else if (polls > 240) {
+                fail("This code expired. Start again for a fresh one.");
+              }
+            } catch (err) {
+              fail(err.message || "Lost contact with the server while waiting");
+            }
+          }, 2500);
+        } catch (err) {
+          fail(err.message || "Could not start sign-in");
+        }
+      };
+
+      const apiKey = () => {
+        openSheet({
+          kind: "account-key",
+          title: "API key",
+          body: (r) => {
+            r.innerHTML =
+              `<p class="sheet-note">Paste an OpenCode Console service-account key. It is sent to the local OpenCode server, which stores it.</p>` +
+              `<label class="field"><span class="field-label">API key</span>` +
+              `<input class="input" id="acct-key" autocomplete="off" spellcheck="false" placeholder="sk-..."></label>` +
+              `<div class="permission-actions"><button class="btn btn-ghost" data-cancel>Cancel</button>` +
+              `<button class="btn btn-primary" data-save>Save key</button></div>`;
+            r.addEventListener("click", async (e) => {
+              if (e.target.closest("[data-cancel]")) return closeSheet();
+              if (!e.target.closest("[data-save]")) return;
+              const key = r.querySelector("#acct-key").value.trim();
+              if (!key) return toast("Enter a key first");
+              try {
+                await state.api.connectKey(OPENCODE_INTEGRATION, key, { label: "Pocket" });
+                toast("Key saved");
+                closeSheet();
+                setTimeout(() => openAccountSheet(), 220);
+              } catch (err) {
+                handleError(err, "Could not save the key");
+              }
+            });
+          },
+        });
+      };
+
+      const signOut = () => {
+        openSheet({
+          kind: "account-out",
+          title: "Sign out?",
+          body: (r) => {
+            r.innerHTML = `<p class="sheet-note">The OpenCode account is removed from this server. Chats stay; new requests fall back to the free default models.</p>
+              <div class="permission-actions">
+                <button class="btn btn-ghost" data-cancel>Cancel</button>
+                <button class="btn btn-danger" data-confirm>Sign out</button>
+              </div>`;
+            r.addEventListener("click", async (e) => {
+              if (e.target.closest("[data-cancel]")) return closeSheet();
+              if (!e.target.closest("[data-confirm]")) return;
+              try {
+                // A connection can be backed by a credential (oauth/key) or by an
+                // environment variable on the host. Only the first kind can be
+                // removed from here, and the sheet says so instead of pretending.
+                const [creds, info] = await Promise.all([
+                  state.api.credentials(),
+                  state.api.integration(OPENCODE_INTEGRATION),
+                ]);
+                const ids = new Set();
+                for (const c of creds ?? []) if (c.integrationID === OPENCODE_INTEGRATION) ids.add(c.id);
+                for (const c of info?.connections ?? []) {
+                  const id = c.credentialID ?? c.id;
+                  if (id && c.type !== "env") ids.add(id);
+                }
+                for (const id of ids) await state.api.deleteCredential(id);
+                state.models = null;
+                const after = await state.api.integration(OPENCODE_INTEGRATION).catch(() => null);
+                const left = after?.connections ?? [];
+                if (!ids.size && left.length) {
+                  closeSheet();
+                  setTimeout(() => {
+                    openSheet({
+                      title: "Managed outside Pocket",
+                      body: (x) => {
+                        x.innerHTML = `<p class="sheet-note">This server still reports ${escapeHtml(left[0].type || "a")} credentials for OpenCode. They come from the server's environment (for example OPENCODE_API_KEY), so they have to be changed where OpenCode runs, not from the app.</p>
+                          <button class="btn btn-ghost btn-block" data-ok>Got it</button>`;
+                        x.addEventListener("click", (ev) => {
+                          if (ev.target.closest("[data-ok]")) closeSheet();
+                        });
+                      },
+                    });
+                  }, 200);
+                  return;
+                }
+                toast(ids.size ? "Signed out" : "No saved account to remove");
+                closeSheet();
+                setTimeout(() => openAccountSheet(), 220);
+              } catch (err) {
+                handleError(err, "Could not sign out");
+              }
+            });
+          },
+        });
+      };
+
+      root.addEventListener("click", async (e) => {
+        const b = e.target.closest("[data-acct]");
+        if (!b) return;
+        const what = b.dataset.acct;
+        if (what === "login") return startLogin();
+        if (what === "cancel") {
+          cancelAttempt();
+          return signedOut();
+        }
+        if (what === "open") {
+          // A device-code URL already carries the code; open it outside the app.
+          const url = `${OPENCODE_SERVER}/device?user_code=${encodeURIComponent(accountCode(root.querySelector(".device-code")?.textContent) || "")}`;
+          if (window.PocketNative?.openExternal) window.PocketNative.openExternal(url);
+          else window.open(url, "_blank", "noopener,noreferrer");
+          return;
+        }
+        if (what === "key") return apiKey();
+        if (what === "out") return signOut();
+        if (what === "conns") {
+          closeSheet();
+          setTimeout(() => openAuthSheet(), 200);
+          return;
+        }
+        if (what === "models") {
+          closeSheet();
+          setTimeout(() => openModelSheet(), 200);
+        }
+      });
+
+      signedOut();
+    },
+  });
+}
+
 async function mcpAction(server, action) {
   try {
     if (action === "connect") {
@@ -4964,6 +5250,7 @@ function openSettings() {
           ${sheetSettingRow("trash", "Delete local copy", "Only saved chats on this device", "history-clear")}
           ${sheetSettingRow("shield", "Permissions", "Rules that skip the approval sheet", "saved-permissions")}
           ${sheetSettingRow("key", "Connections", "Provider logins and saved keys", "open-auth")}
+          ${sheetSettingRow("spark", "OpenCode account", "Sign in with your own account", "open-account")}
           ${sheetSettingRow("spark", "Provider catalog", "models.dev · logos, free models", "provider-catalog")}
           ${sheetSettingRow("plug", "MCP servers", "Tools connected to this workspace", "open-mcp")}
           ${sheetSettingRow("cpu", "Providers", "Model providers this server reaches", "open-providers")}
@@ -5081,6 +5368,10 @@ function openSettings() {
         }
         if (e.target.closest("#open-auth")) {
           openAuthSheet();
+          return;
+        }
+        if (e.target.closest("#open-account")) {
+          openAccountSheet();
           return;
         }
         if (e.target.closest("#provider-catalog")) {
