@@ -775,6 +775,11 @@ async function openSession(sessionOrId) {
   updateRevertBanner();
   updateDiffChip();
 
+  // Opening a session is what clears its unread dot on the server. The route
+  // takes the idle timestamp as a number - sending a boolean (or nothing) is
+  // rejected with a 400, which is how this call used to fail silently.
+  markSessionViewed(session);
+
   try {
     await loadMessages();
     await loadPermissions();
@@ -798,6 +803,22 @@ function closeChat(fromPop = false) {
   resetMessageRender();
   showScreen("sessions");
   refreshSessions(true).catch(() => {});
+}
+
+/**
+ * Tell the server this conversation has been seen, so its unread dot clears the
+ * way the official clients clear it. `idle` is the timestamp to mark viewed up
+ * to, and the route expects a number.
+ */
+async function markSessionViewed(session) {
+  if (!state.api || !session?.id) return;
+  const idle = Number(session.time?.idle) || Date.now();
+  session.time = { ...(session.time ?? {}), viewed: idle };
+  try {
+    await state.api.viewSession(session.id, idle);
+  } catch {
+    // Older servers may not have the route; an unread dot is not worth a toast.
+  }
 }
 
 async function loadMessages() {
@@ -1230,7 +1251,15 @@ function turnDuration(turn, live) {
 
 function renderAssistant(m, opts = {}) {
   const parts = messageParts(m);
+  // Two different questions, so two flags. `streaming` is about this message:
+  // it is the one the model is writing right now, so it gets the caret and the
+  // typing dots. `turnLive` is about the turn: it is still running, so its
+  // panel must keep saying "Working..." and the icons and token line must stay
+  // off until it ends. Tying both to the same flag made a running turn flash
+  // "Worked · 3 steps" between two steps, and put the icons on an intermediate
+  // step only to move them again when the next step arrived.
   const streaming = opts.streaming ?? (state.busy && m.id === state.lastAssistantId);
+  const turnLive = opts.turnLive ?? (state.busy && m.id === state.lastAssistantId);
   // Only the message that ends the turn carries actions and token counters.
   const showMeta = opts.showMeta !== false;
   const turn = opts.turn ?? null;
@@ -1248,7 +1277,7 @@ function renderAssistant(m, opts = {}) {
           kind: "activity",
           items: turn.items,
           key: "turn:" + turn.id,
-          durationMs: turnDuration(turn, streaming),
+          durationMs: turnDuration(turn, turnLive),
         });
       }
       return;
@@ -1258,7 +1287,7 @@ function renderAssistant(m, opts = {}) {
 
   const html = blocks
     .map((b) => {
-      if (b.kind === "activity") return renderActivity(b.items, m, streaming, b.key, b.durationMs);
+      if (b.kind === "activity") return renderActivity(b.items, m, turnLive, b.key, b.durationMs);
       const { part, idx } = b;
       if (part.type === "text") {
         // Whitespace-only text parts are common between tool calls; rendering
@@ -1295,14 +1324,17 @@ function renderAssistant(m, opts = {}) {
   const empty =
     !html && !failure && streaming ? `<div class="typing-row"><span class="typing"><i></i><i></i><i></i></span></div>` : "";
 
-  const footer = streaming || !showMeta ? "" : `${usageLine(m)}${followUpsFor(m)}`;
+  // Icons and the token line belong to a finished turn: while it is running
+  // there is nothing to copy or regenerate yet, and showing them on whichever
+  // step happens to be latest reads as a flicker.
+  const footer = turnLive || !showMeta ? "" : `${usageLine(m)}${followUpsFor(m)}`;
 
   return `
     <div class="msg msg-assistant" data-msg="${escapeHtml(m.id)}">
       <div class="assistant-body">${html}${retry}${failure}${empty}</div>
       ${artifactCards(m)}
-      ${showMeta ? stamp(m) : ""}
-      ${streaming || !showMeta ? "" : assistantActions(m)}
+      ${showMeta && !turnLive ? stamp(m) : ""}
+      ${turnLive || !showMeta ? "" : assistantActions(m)}
       ${footer}
     </div>`;
 }
@@ -1460,13 +1492,24 @@ function renderMessages(force = false) {
   // Build one activity bucket per user request. OpenCode emits several
   // assistant messages per turn (one per step); grouping by message produced a
   // "Worked for N steps" panel under every step. The bucket fixes that.
+  //
+  // The bucket index has to be the *same* number the render loop below uses for
+  // that message, so it is recorded per message instead of recomputed. A loaded
+  // window often starts mid-turn (the API returns the last N messages), and the
+  // two loops used to count a leading assistant run differently: the buckets
+  // ran from 0, the render loop from -1, so every turn after the first user
+  // message read its predecessor's bucket. The activity panel then matched no
+  // message (the work vanished from the transcript) and the token/action row
+  // landed on the wrong step.
   const turns = [];
+  const turnIndex = new Map();
   let turnCursor = -1;
   for (const m of state.messages) {
     if (m.type === "user" || turnCursor < 0) {
       turnCursor = Math.max(0, turnCursor + 1);
       turns[turnCursor] = { id: turnCursor, items: [], activityMessageId: null, metaMessageId: null, start: 0, end: 0, last: 0 };
     }
+    turnIndex.set(m, turnCursor);
     const bucket = turns[turnCursor];
     const created = m.time?.created ?? 0;
     if (bucket && created) {
@@ -1491,21 +1534,20 @@ function renderMessages(force = false) {
   }
 
   let shownFailure = null;
-  let activeTurn = -1;
   for (const m of state.messages) {
+    const turn = turns[turnIndex.get(m)] ?? null;
+    const lastTurn = !!turn && turn.id === turns.length - 1;
     if (m.type === "user") {
-      activeTurn++;
       shownFailure = null;
       chunks.push(renderUser(m));
     } else if (m.type === "assistant") {
-      const turn = turns[activeTurn] ?? null;
-      const lastTurn = activeTurn === turns.length - 1;
       if (m.error) shownFailure = m.error.message ?? "";
       chunks.push(
         renderAssistant(m, {
           turn,
           showActivity: !!turn && turn.activityMessageId === m.id,
-          streaming: lastTurn && state.busy,
+          turnLive: lastTurn && state.busy,
+          streaming: state.busy && m.id === state.lastAssistantId,
           showMeta: !turn || !turn.metaMessageId || turn.metaMessageId === m.id,
         })
       );

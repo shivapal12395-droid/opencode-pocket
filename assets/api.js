@@ -288,7 +288,8 @@ export class Api {
 
   /** Mark the session read up to an idle watermark (Session.Info.time.idle). */
   viewSession(id, idle) {
-    return this.request("POST", `/api/session/${id}/view`, { idle });
+    // The route validates `idle` as a number ("Expected number at [\"idle\"]").
+    return this.request("POST", `/api/session/${id}/view`, { idle: Number(idle) || Date.now() });
   }
 
   /** Run a shell command through the session, like a `!cmd` prompt. */

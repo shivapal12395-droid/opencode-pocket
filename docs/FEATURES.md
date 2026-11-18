@@ -66,7 +66,7 @@ below is judged by "can I do it from a phone with this UI".
 | Rename / archive / unarchive / delete | yes | **yes** |
 | Tabs (several sessions at once) | yes (desktop + TUI) | **no** |
 | Recent sessions sidebar, pins, reorder | yes (desktop, experimental) | **no** |
-| Read / unread + inbox badges | yes | **yes** - unread dot from `time.viewed`, failed-run dot from `outcome` |
+| Read / unread + inbox badges | yes | **yes** - unread dot from `time.viewed`, cleared by `POST /api/session/{id}/view` when the conversation is opened |
 | Inbox (queued prompts, delivered work) | yes | **yes** - queue-only strip above the composer, steer ↔ queue switch, cancel, `PATCH`/`DELETE /api/session/{id}/inbox` |
 | Failed-run indicator on a tab | yes | **yes** - `.session-failed` dot driven by `outcome` |
 | Archived sessions | hidden from the list | **yes** - hidden by default, an `Archived (n)` filter in the list header brings them back for unarchive |

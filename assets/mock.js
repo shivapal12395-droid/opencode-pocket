@@ -473,6 +473,90 @@ MESSAGES.ses_demo7 = [
   { id: "msg_d7i", type: "idle", outcome: "succeeded", time: { created: now() - 3 * hour + 41_000 } },
 ];
 
+// Shaped like a real loaded window. The server returns the last N messages, so a
+// window can start in the middle of a turn: this one opens on a tool-only step
+// from a turn whose user message is no longer loaded. The bucket pass and the
+// render pass have to agree on that message's turn number, or the leading run
+// shifts every later turn by one and the activity panels disappear.
+MESSAGES.ses_demo9 = [
+  {
+    id: "msg_d9pre",
+    type: "assistant",
+    model: MODEL,
+    agent: "build",
+    time: { created: now() - 2 * hour, completed: now() - 2 * hour + 9_000 },
+    content: [
+      { type: "reasoning", text: "The window opened mid-turn: this step belongs to a request that is no longer in the loaded range.", ordinal: 0 },
+      tool("call_d9pre", "shell", { command: "rg -n 'fs/find' src" }, "src/http/fs.ts:88"),
+    ],
+  },
+  {
+    id: "msg_d9u",
+    type: "user",
+    text: "Turn jo kar sakte ho karo — broken ripgrep ka workaround, stale pty dirs ki safai, aur report file.",
+    files: [],
+    time: { created: now() - 105 * min },
+  },
+  {
+    id: "msg_d9s1",
+    type: "assistant",
+    model: MODEL,
+    agent: "build",
+    time: { created: now() - 105 * min, completed: now() - 104 * min },
+    content: [
+      { type: "reasoning", text: "Back up the runtime rootfs before touching anything in it.", ordinal: 0 },
+      tool("call_d9a", "shell", { command: "cp -a rootfs rootfs.bak" }, "backed up"),
+      tool("call_d9b", "shell", { command: "ls -la rootfs/bin | head" }, "total 42"),
+    ],
+  },
+  {
+    id: "msg_d9s2",
+    type: "assistant",
+    model: MODEL,
+    agent: "build",
+    time: { created: now() - 103 * min, completed: now() - 102 * min },
+    content: [
+      { type: "reasoning", text: "Write the shim now, then confirm the endpoint stops 500ing.", ordinal: 0 },
+      tool("call_d9c", "execute", { code: "write rg shim" }, "shim written"),
+      tool("call_d9d", "shell", { command: "curl -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:4098/api/fs/find?query=test'" }, "200"),
+      tool("call_d9e", "shell", { command: "find . -name service.lock | wc -l" }, "219"),
+    ],
+  },
+  { id: "msg_d9c", type: "compaction", status: "completed", reason: "auto", time: { created: now() - 101 * min } },
+  {
+    id: "msg_d9s3",
+    type: "assistant",
+    model: MODEL,
+    agent: "build",
+    time: { created: now() - 100 * min, completed: now() - 99 * min },
+    content: [
+      { type: "reasoning", text: "Report what was cleaned and what is still open.", ordinal: 0 },
+      { type: "text", text: "`/api/fs/find` ab 200 de raha hai. Ab bache hue patterns test karta hoon.", ordinal: 1 },
+      tool("call_d9f", "shell", { command: "curl -s 'http://127.0.0.1:4098/api/fs/find?query=*.md'" }, "no files found"),
+    ],
+  },
+  { id: "msg_d9i", type: "idle", outcome: "succeeded", time: { created: now() - 99 * min + 2_000 } },
+  {
+    id: "msg_d9an",
+    type: "assistant",
+    model: MODEL,
+    agent: "build",
+    time: { created: now() - 98 * min, completed: now() - 96 * min },
+    tokens: { input: 41_200, output: 1_180, cache: { read: 30_400, write: 0 } },
+    cost: 0.0041,
+    content: [
+      { type: "reasoning", text: "Summarise the three fixes and what is still blocked.", ordinal: 0 },
+      {
+        type: "text",
+        text: "## Kya theek hua\n\n| Cheez | Hal |\n| --- | --- |\n| ripgrep | musl build ka shim, `fs/find` 200 |\n| PTY dirs | 219 stale dirs hata diye |\n| health report | `app_report.md` update |\n\nBaaki do cheezein server ke config par depend karti hain, is liye unhein Pocket se theek nahi kiya ja sakta.",
+        ordinal: 1,
+      },
+      tool("call_d9g", "grep", { pattern: "persistentPty", path: "src" }, "src/pty/daemon.ts:41"),
+    ],
+  },
+  { id: "msg_d9i2", type: "idle", outcome: "succeeded", time: { created: now() - 95 * min } },
+];
+
 MESSAGES.ses_demo8 = [
   {
     id: "msg_d8u",
@@ -531,6 +615,15 @@ SESSIONS.push(
     title: "Upload helper and inbox flow",
     location: { directory: DIRS.api },
     time: { created: now() - 4 * hour, updated: now() - 4 * hour, idle: now() - 4 * hour },
+  },
+  {
+    id: "ses_demo9",
+    projectID: "prj_api",
+    agent: "build",
+    model: MODEL,
+    title: "Backend health check",
+    location: { directory: DIRS.api },
+    time: { created: now() - 2 * hour, updated: now() - 95 * min, idle: now() - 95 * min },
   }
 );
 
@@ -623,6 +716,15 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
     this.messageMap[id] = [];
     this.emit("session.created", { sessionID: id });
     return { data: clone(s) };
+  }
+
+  /* ---- seen: opening a session clears its unread dot on the server ---- */
+
+  async viewSession(id, idle) {
+    const s = this.sessionList.find((x) => x.id === id);
+    if (!s) return { ok: false };
+    s.time = { ...(s.time ?? {}), viewed: Number(idle) || now() };
+    return { ok: true };
   }
 
   async updateSession(id, patch) {
