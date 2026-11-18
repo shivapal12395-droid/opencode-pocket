@@ -285,6 +285,56 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     return "0 dangerous nodes";
   });
 
+  await test("Theme flip repaints the diagram", async () => {
+    const read = () =>
+      page.evaluate(() => {
+        const node = document.querySelector("pre.mermaid.drawn svg g.node rect, pre.mermaid.drawn svg .node rect");
+        const token = document.querySelector(".md .code-block code .hljs-keyword, .md .code-block code .hljs-string, .md .code-block code span");
+        const block = document.querySelector(".md .code-block");
+        return {
+          fill: node ? getComputedStyle(node).fill : "",
+          token: token ? getComputedStyle(token).color : "",
+          bg: block ? getComputedStyle(block).backgroundColor : "",
+        };
+      });
+    const before = await read();
+    await page.evaluate(async () => {
+      const p = await import("./assets/prefs.js");
+      p.setPref("theme", "light");
+    });
+    await page.waitForFunction(
+      (prev) => {
+        const n = document.querySelector("pre.mermaid.drawn svg g.node rect, pre.mermaid.drawn svg .node rect");
+        return n && getComputedStyle(n).fill !== prev;
+      },
+      before.fill,
+      { timeout: 15000 }
+    );
+    const after = await read();
+    assert(after.fill && after.fill !== before.fill, `fill stayed ${after.fill}`);
+    // The code surface stays dark in every theme, so its tokens must stay light:
+    // a light-page token colour on #0f172a is the bug this guards.
+    const lum = (rgb) => {
+      const [r, g, b] = (rgb.match(/\d+/g) || [0, 0, 0]).map(Number).map((v) => {
+        const s = v / 255;
+        return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+      });
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const ratio = (a, b) => {
+      const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
+      return (hi + 0.05) / (lo + 0.05);
+    };
+    const contrast = ratio(after.token, after.bg);
+    assert(contrast > 4.5, `code contrast ${contrast.toFixed(1)}:1 on ${after.bg}`);
+    await page.evaluate(async () => {
+      const p = await import("./assets/prefs.js");
+      p.setPref("theme", "amoled");
+    });
+    await sleep(300);
+    return `${before.fill} -> ${after.fill}, code ${contrast.toFixed(1)}:1`;
+  });
+
   /* ---------------- report ---------------- */
   console.log("");
   for (const r of report) console.log(`${r.status.padEnd(5)} ${r.name.padEnd(38)} ${r.detail}`);

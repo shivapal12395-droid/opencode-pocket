@@ -1654,8 +1654,27 @@ function decorateTranscript() {
   for (const node of pending) io.observe(node);
 }
 
-/* code blocks: a wrapped block stays wrapped when the transcript rebuilds */
-function codeBlockKey(block) {
+/* A theme or accent flip changes the diagram palette, and Mermaid bakes colours
+ * into each SVG. Repaint the ones already on screen from their stored source
+ * instead of rebuilding the whole transcript. */
+function repaintDiagrams() {
+  diagramEngine.cache.clear();
+  for (const node of $$("pre.mermaid.drawn, pre.mermaid.failed", el.messages)) {
+    const source = node.__mermaidSource;
+    if (!source) continue;
+    node.classList.remove("drawn", "failed");
+    node.textContent = source;
+    const note = node.nextElementSibling;
+    if (note?.classList?.contains("mermaid-error")) note.remove();
+  }
+  decorateTranscript();
+  if (state.artifact && !el.artifact.hidden) renderArtifact();
+}
+
+const paletteKey = () =>
+  themeKey() + ":" + getComputedStyle(document.documentElement).getPropertyValue("--accent").trim();
+
+/* code blocks: a wrapped block stays wrapped when the transcript rebuilds */function codeBlockKey(block) {
   const msg = block.closest("[data-msg]");
   const scope = msg ?? el.messages;
   return (msg?.dataset.msg ?? "-") + ":" + [...scope.querySelectorAll(".code-block")].indexOf(block);
@@ -6687,13 +6706,17 @@ async function boot() {
   cacheDom();
   applyPrefs(state.prefs);
   applyTheme();
+  state.paletteKey = paletteKey();
   bindEvents();
   onPrefs((prefs) => {
+    const paletteBefore = state.paletteKey;
     state.prefs = prefs;
     if (prefs.theme && prefs.theme !== state.theme) {
       state.theme = prefs.theme;
       applyTheme();
     }
+    state.paletteKey = paletteKey();
+    if (paletteBefore && paletteBefore !== state.paletteKey) repaintDiagrams();
     renderMessages(true);
   });
   el.composerHint.textContent = defaultHint();

@@ -597,7 +597,7 @@ svg { display: block; }
   display: block; padding: 11px; overflow-x: auto; background: none; border: 0;
   color: #d6dbe2; font-size: 12.2px; line-height: 1.55; white-space: pre; word-break: normal;
 }
-.md table { width: 100%; border-collapse: collapse; margin: 0 0 11px; font-size: 13px; display: block; overflow-x: auto; }
+.md table { width: 100%; border-collapse: collapse; margin: 0 0 11px; font-size: 13px; }
 .md th, .md td { border: 1px solid var(--line); padding: 5px 7px; text-align: left; word-break: normal; overflow-wrap: break-word; min-width: 3.5em; }
 .md th { background: var(--soft); font-weight: 600; }
 .md img { max-width: 100%; border-radius: 8px; }
@@ -1146,8 +1146,13 @@ button.setting-row { width: 100%; text-align: left; background: none; border: 0;
   border: 1px solid var(--line-strong); font-size: 10px; vertical-align: -2px;
 }
 .md .task.done { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.md .task.done::after {
+  content: ""; width: 7px; height: 4px; margin-top: -2px;
+  border-left: 1.6px solid var(--accent); border-bottom: 1.6px solid var(--accent);
+  transform: rotate(-45deg);
+}
 .md .table-wrap { overflow-x: auto; margin: 0 0 11px; border-radius: 9px; border: 1px solid var(--line); }
-.md .table-wrap table { margin: 0; font-size: calc(13px * var(--font-scale)); }
+.md .table-wrap table { margin: 0; font-size: calc(13px * var(--font-scale)); min-width: max-content; }
 .md .md-img { display: block; margin: 4px 0 10px; }
 .md .image { max-width: 100%; border-radius: 9px; }
 .math-inline, .math-block {
@@ -1516,16 +1521,9 @@ button.setting-row { width: 100%; text-align: left; background: none; border: 0;
 .hljs-deletion { color: #f07178; }
 .hljs-emphasis { font-style: italic; }
 .hljs-strong { font-weight: 650; }
-:root[data-theme="light"] .hljs { color: #1f2937; }
-:root[data-theme="light"] .hljs-comment, :root[data-theme="light"] .hljs-quote { color: #6b7280; }
-:root[data-theme="light"] .hljs-keyword, :root[data-theme="light"] .hljs-selector-tag,
-:root[data-theme="light"] .hljs-literal, :root[data-theme="light"] .hljs-doctag { color: #7c3aed; }
-:root[data-theme="light"] .hljs-string, :root[data-theme="light"] .hljs-regexp,
-:root[data-theme="light"] .hljs-addition { color: #15803d; }
-:root[data-theme="light"] .hljs-number, :root[data-theme="light"] .hljs-symbol { color: #b45309; }
-:root[data-theme="light"] .hljs-title, :root[data-theme="light"] .hljs-meta { color: #1d4ed8; }
-:root[data-theme="light"] .hljs-title.class_, :root[data-theme="light"] .hljs-type { color: #a16207; }
-:root[data-theme="light"] .hljs-tag, :root[data-theme="light"] .hljs-name { color: #be123c; }
+/* The code surface stays dark in every theme (`--code-bg`), so the token
+   palette above is the only one: a light-page token set here would put dark
+   text on a dark block. */
 
 /* Mermaid: the source shows while the turn is still running, the drawing
    replaces it once it settles. Tap either to open it full screen. */
