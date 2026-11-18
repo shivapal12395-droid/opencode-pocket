@@ -758,6 +758,25 @@ svg { display: block; }
 }
 .sheet.open { transform: translateY(0); }
 .sheet-grab { width: 34px; height: 4px; border-radius: 99px; background: var(--line-strong); margin: 8px auto 2px; flex: none; }
+
+/* A destination takes the whole app area: no grab handle, no rounded top, a
+   back arrow in the header, and its own scroll. Sheets that interrupt a chat
+   keep the sheet form above. */
+.sheet.page {
+  top: 0; bottom: 0; max-height: none; height: 100%;
+  border-radius: 0; border-top: none;
+  padding-top: env(safe-area-inset-top, 0px);
+}
+.sheet.page .sheet-grab { display: none; }
+.sheet.page .sheet-head {
+  padding: 10px 8px 10px 8px;
+  border-bottom: 1px solid var(--line);
+  background: var(--elev-2, var(--elev));
+}
+.sheet.page .sheet-head h2 { font-size: 17px; font-weight: 650; }
+.sheet.page .sheet-body { padding: 10px 14px 24px; }
+.sheet-back { flex: none; }
+.sheet.page #sheet-close { color: var(--muted); }
 .sheet-head { display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 18px; flex: none; }
 .sheet-head h2 { margin: 0; font-size: 15px; font-weight: 650; letter-spacing: -0.015em; flex: 1; min-width: 0; }
 .sheet-body { padding: 2px 14px 18px; overflow-y: auto; overscroll-behavior: contain; }

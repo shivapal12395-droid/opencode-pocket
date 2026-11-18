@@ -294,6 +294,61 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     return "device code -> signed in -> signed out";
   });
 
+  await test("Destinations take the full area; chat sheets stay sheets", async () => {
+    // The reference screens are full-screen pages with a back header. Sheets that
+    // interrupt a chat (the chat menu, a rename) must not become full-screen.
+    await page.evaluate(() => document.querySelector("#sheet-close")?.click());
+    await sleep(400);
+    await page.evaluate(() => document.querySelector("#chat-back")?.click());
+    await sleep(500);
+    await page.click('.session-row [data-open="ses_demo7"]');
+    await page.waitForSelector(".msg", { timeout: 8000 });
+    await sleep(600);
+
+    await page.evaluate(async () => {
+      document.querySelector("#chat-sidebar")?.click();
+      await new Promise((r) => setTimeout(r, 450));
+      document.querySelector('[data-side="library"]')?.click();
+    });
+    await sleep(900);
+    const page1 = await page.evaluate(() => {
+      const s = document.querySelector("#sheet");
+      return {
+        title: document.querySelector("#sheet-title")?.textContent?.trim() ?? "",
+        isPage: s.classList.contains("page"),
+        backShown: !document.querySelector("#sheet-back").hidden,
+        height: Math.round(s.getBoundingClientRect().height),
+        width: Math.round(s.getBoundingClientRect().width),
+        viewport: window.innerHeight,
+        vw: window.innerWidth,
+        grabShown: getComputedStyle(document.querySelector(".sheet-grab")).display !== "none",
+      };
+    });
+    assert(page1.title === "Library", "title=" + page1.title);
+    assert(page1.isPage, "Library is not a page");
+    assert(page1.backShown, "no back arrow on the page");
+    assert(!page1.grabShown, "grab handle still shown on a page");
+    assert(page1.height >= page1.viewport - 2 && page1.width >= page1.vw - 2, `page is ${page1.height}x${page1.width} of ${page1.viewport}x${page1.vw}`);
+
+    await page.evaluate(() => document.querySelector("#sheet-back").click());
+    await sleep(700);
+    const closed = await page.evaluate(() => document.querySelector("#sheet").hidden);
+    assert(closed, "the back arrow did not close the page");
+
+    // A sheet that interrupts a chat keeps the sheet form.
+    await page.evaluate(() => document.querySelector("#chat-menu")?.click());
+    await sleep(500);
+    const sheet1 = await page.evaluate(() => {
+      const s = document.querySelector("#sheet");
+      return { isPage: s.classList.contains("page"), backShown: !document.querySelector("#sheet-back").hidden, height: Math.round(s.getBoundingClientRect().height) };
+    });
+    assert(!sheet1.isPage && !sheet1.backShown, "the chat menu became a full page");
+    assert(sheet1.height < page1.viewport, "the chat menu covers the whole screen");
+    await page.evaluate(() => document.querySelector("#sheet-close")?.click());
+    await sleep(400);
+    return `page ${page1.width}x${page1.height} full-area, chat menu ${sheet1.height}px`;
+  });
+
   console.log("\n================ FEATURE TEST REPORT 8 ================");
   let pass = 0, fail = 0;
   for (const r of report) { console.log(`${r.status === "PASS" ? "PASS" : "FAIL"}  ${r.name.padEnd(36)} ${r.detail}`); r.status === "PASS" ? pass++ : fail++; }

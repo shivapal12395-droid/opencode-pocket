@@ -236,6 +236,7 @@ MCP write paths and the task checklist.
 | Explicit deletion | **yes** - server delete removes the local copy too; "Delete local copy" is separate and confirmed |
 | Export / import | **yes** - versioned JSON backup including messages |
 | Encrypted backup | **no** - the export is plain JSON, protected only by where the user stores it |
+| Presentation | **yes** - destinations a sidebar row leads to (Customize, Providers, catalog, Plugins, MCP, Projects, Worktrees, Scheduled, Library, Images, Settings, Connections, account, stats, commands) take the whole app area with a back header and no grab handle; sheets that interrupt a chat (permission, rename, model pick, chat menu) keep the bottom-sheet form |
 | Provider catalog | **yes** - live models.dev catalog (324 providers at the time of writing), brand-coloured logos, search; a card is READY with the server's real model count only when that provider's models are actually being served, and an unconnected provider offers its connect flow instead of model rows |
 | Providers sheet | **yes** - lists the providers this server can run, each with the number of models it serves; a saved-but-silent provider says so. Demo mode mirrors this (OpenCode + OpenAI reachable, Anthropic not) |
 | Custom provider | **no** - v2.3.0's `PATCH /api/experimental/config` only accepts `shell`; providers must be added to `opencode.jsonc` on the server |

@@ -157,6 +157,7 @@ function cacheDom() {
   el.sheetTitle = $("#sheet-title");
   el.sheetBody = $("#sheet-body");
   el.sheetClose = $("#sheet-close");
+  el.sheetBack = $("#sheet-back");
   el.toast = $("#toast");
 }
 
@@ -4589,9 +4590,23 @@ function usageLine(m) {
 
 /* ---------------------------------------------------------------- sheets */
 
+/**
+ * Kinds that are destinations rather than glances: they take the whole app area
+ * with a back header, the way a page is expected to behave on a phone. Sheets
+ * that interrupt a chat (a permission, a rename, a model pick) stay sheet-sized.
+ */
+const PAGE_KINDS = new Set([
+  "settings", "customize", "catalog", "providers", "plugins", "mcp", "mcp-resources", "mcp-add",
+  "projects", "worktrees", "schedules", "library", "images", "stats", "instructions", "updates",
+  "engine-update", "prefs", "commands", "auth", "account",
+]);
+
 function openSheet({ title, body, onClose, kind = null }) {
   clearTimeout(state.sheetCloseTimer);
   state.sheetKind = kind;
+  const isPage = PAGE_KINDS.has(kind);
+  el.sheet.classList.toggle("page", isPage);
+  el.sheetBack.hidden = !isPage;
   // Every body() call attaches its own delegated click listener. Reusing one
   // root would keep those closures alive, so a tap in a later sheet would also
   // fire the handlers of every sheet opened before it (archiving the session
@@ -5380,6 +5395,7 @@ function openPrefsStudio() {
 
 function openSettings() {
   openSheet({
+    kind: "settings",
     title: "Settings",
     body: (root) => {
       const theme = state.theme;
@@ -6106,6 +6122,7 @@ function bindEvents() {
   // sheet
   el.scrim.addEventListener("click", () => closeSheet(false));
   el.sheetClose.addEventListener("click", () => closeSheet(false));
+  el.sheetBack.addEventListener("click", () => closeSheet(false));
 
   // settings
   $("#open-settings").addEventListener("click", openSettings);
