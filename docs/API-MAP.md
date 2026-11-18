@@ -97,6 +97,7 @@ keys everything by `projectID`, and `project.canonical` is the directory to show
 | --- | --- | --- |
 | Session list / search | `GET /api/session`, `?search=` | supported |
 | Messages | `GET /api/session/{id}/message?limit=&order=` | supported |
+| Older messages (paging) | `GET /api/session/{id}/message?limit=&cursor=` | supported — the cursor encodes its own direction and **`order` must be omitted** (`400 InvalidCursorError: Cursor cannot be combined with order`). With `order=desc` the newest page is returned first and `cursor.next` walks *older*; `cursor.previous` walks back towards the newest |
 | Prompt / abort / steer | `POST /api/session/{id}/prompt`, `/abort`, inbox endpoints | supported |
 | Live events | `GET /api/event` (SSE, never returns — it is a stream) | supported |
 | Agents, skills, commands, references, forms | `GET /api/agent`, `/api/skill`, `/api/command`, `/api/reference`, `/api/form` | supported |

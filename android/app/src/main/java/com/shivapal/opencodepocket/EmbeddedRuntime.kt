@@ -263,6 +263,45 @@ object EmbeddedRuntime {
     fun stop(handle: Long) = NativeLauncher.stop(handle)
     fun waitFor(handle: Long): Int = NativeLauncher.waitFor(handle)
 
+    /**
+     * Kill every OpenCode daemon this app is running.
+     *
+     * The process is spawned natively and its handle is not kept, so a "stop"
+     * that only stops the Android service leaves the daemon (and its open
+     * database) alive — which is why a restore used to appear to do nothing,
+     * and why "restart the runtime" reused the old process.
+     *
+     * /proc is readable for this app's own uid, so only our own children match.
+     */
+    fun killAll(context: Context): Int {
+        val killed = mutableListOf<String>()
+        val pids = try {
+            java.io.File("/proc").listFiles()
+                ?.filter { f -> f.name.all { it.isDigit() } }
+                ?.filter { f ->
+                    try {
+                        java.io.File(f, "cmdline").readBytes().toString(Charsets.UTF_8).contains("opencode")
+                    } catch (_: Throwable) {
+                        false
+                    }
+                }
+                ?.mapNotNull { it.name.toLongOrNull() }
+                ?: emptyList()
+        } catch (_: Throwable) {
+            emptyList()
+        }
+        for (pid in pids) {
+            if (pid == android.os.Process.myPid().toLong()) continue // never kill ourselves
+            try {
+                Runtime.getRuntime().exec(arrayOf("/system/bin/kill", "-9", pid.toString())).waitFor()
+                killed += pid.toString()
+            } catch (_: Throwable) {
+            }
+        }
+        note(context, "killed daemons: ${killed.joinToString(",").ifEmpty { "none" }}")
+        return killed.size
+    }
+
     private fun sha256(file: File): String {
         val md = MessageDigest.getInstance("SHA-256")
         BufferedInputStream(file.inputStream()).use { input ->

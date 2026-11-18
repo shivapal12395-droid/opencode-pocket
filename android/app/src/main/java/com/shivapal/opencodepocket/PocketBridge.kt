@@ -225,6 +225,9 @@ class PocketBridge(private val activity: MainActivity) {
         return try {
             RuntimeSupervisor.reset()
             activity.startService(Intent(activity, OpencodeService::class.java).setAction(OpencodeService.ACTION_STOP))
+            // A real restart: the daemon process goes away too, so the next
+            // ensure() starts a new one instead of reusing the old.
+            EmbeddedRuntime.killAll(activity)
             activity.startService(Intent(activity, OpencodeService::class.java))
             android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
                 activity.recreate()
@@ -247,6 +250,247 @@ class PocketBridge(private val activity: MainActivity) {
 
     @android.webkit.JavascriptInterface
     fun serviceRunning(): Boolean = OpencodeService.isRunning
+
+    // ---- data safety ------------------------------------------------------
+    //
+    // The runtime's own store (sessions, messages, settings, provider logins)
+    // lives in app-private storage, which Android deletes on uninstall. These
+    // two methods move a copy of that store out to Downloads and back, so a
+    // reinstall can recover the original sessions with their original ids.
+    //
+    // Nothing here is ever automatic: a restore only runs when the user asks,
+    // and the data that is replaced is moved aside, never deleted.
+
+    private fun runtimeHome(): java.io.File = java.io.File(activity.filesDir, "opencode-home")
+
+    private val backupFolder = "OpenCodePocket"
+
+    private fun backupFile(name: String): java.io.File? {
+        val dir = java.io.File(activity.getExternalFilesDir(null), backupFolder)
+        val file = java.io.File(dir, name.substringAfterLast('/').substringAfterLast('\\'))
+        return if (file.exists()) file else null
+    }
+
+    /**
+     * Zip the runtime home (minus the project workspace, which is the user's
+     * code and not Pocket's to duplicate) into Downloads.
+     */
+    @android.webkit.JavascriptInterface
+    fun backupRuntime(): String {
+        val name = "opencode-backup-" +
+            java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US).format(java.util.Date()) + ".zip"
+        return try {
+            val root = runtimeHome()
+            if (!root.exists()) {
+                return JSONObject().put("ok", false).put("error", "There is no runtime data to back up yet").toString()
+            }
+            val workspace = java.io.File(root, "workspace").path
+            val tmp = java.io.File(activity.cacheDir, name)
+            var entries = 0
+            java.util.zip.ZipOutputStream(java.io.BufferedOutputStream(java.io.FileOutputStream(tmp))).use { zip ->
+                for (f in root.walkTopDown()) {
+                    if (!f.isFile) continue
+                    if (f.path.startsWith(workspace)) continue          // the project itself
+                    if (f.name == "embedded-runtime.log") continue
+                    // opencode.db-wal / -shm are copied on purpose: the database
+                    // runs in WAL mode, so the newest turns only exist there
+                    // until a checkpoint. SQLite replays them when it reopens.
+                    val rel = f.relativeTo(root).invariantSeparatorsPath
+                    zip.putNextEntry(java.util.zip.ZipEntry(rel))
+                    f.inputStream().use { it.copyTo(zip) }
+                    zip.closeEntry()
+                    entries += 1
+                }
+            }
+            val bytes = tmp.length()
+            val where = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val values = android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.Downloads.DISPLAY_NAME, name)
+                    put(android.provider.MediaStore.Downloads.MIME_TYPE, "application/zip")
+                    put(
+                        android.provider.MediaStore.Downloads.RELATIVE_PATH,
+                        android.os.Environment.DIRECTORY_DOWNLOADS + "/" + backupFolder,
+                    )
+                }
+                val uri = activity.contentResolver.insert(
+                    android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values
+                ) ?: throw IllegalStateException("Downloads refused the file")
+                activity.contentResolver.openOutputStream(uri)?.use { out ->
+                    tmp.inputStream().use { it.copyTo(out) }
+                } ?: throw IllegalStateException("could not write the backup")
+                "Downloads/$backupFolder/$name"
+            } else {
+                val dir = java.io.File(activity.getExternalFilesDir(null), backupFolder).also { it.mkdirs() }
+                val dst = java.io.File(dir, name)
+                tmp.copyTo(dst, overwrite = true)
+                dst.absolutePath
+            }
+            tmp.delete()
+            JSONObject().put("ok", true).put("name", name).put("bytes", bytes)
+                .put("entries", entries).put("where", where).toString()
+        } catch (t: Throwable) {
+            JSONObject().put("ok", false).put("error", t.message ?: "backup failed").toString()
+        }
+    }
+
+    /** Every backup on the device, newest first. */
+    @android.webkit.JavascriptInterface
+    fun listRuntimeBackups(): String {
+        val out = org.json.JSONArray()
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val cols = arrayOf(
+                    android.provider.MediaStore.Downloads.DISPLAY_NAME,
+                    android.provider.MediaStore.Downloads.SIZE,
+                    android.provider.MediaStore.Downloads.DATE_ADDED,
+                )
+                val where = android.provider.MediaStore.Downloads.RELATIVE_PATH + " LIKE ?"
+                activity.contentResolver.query(
+                    android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                    cols, where, arrayOf("%$backupFolder%"),
+                    android.provider.MediaStore.Downloads.DATE_ADDED + " DESC",
+                )?.use { c ->
+                    while (c.moveToNext()) {
+                        val n = c.getString(0) ?: continue
+                        if (!n.startsWith("opencode-backup-") || !n.endsWith(".zip")) continue
+                        out.put(
+                            JSONObject().put("name", n).put("bytes", c.getLong(1))
+                                .put("at", c.getLong(2) * 1000L)
+                        )
+                    }
+                }
+            } else {
+                val dir = java.io.File(activity.getExternalFilesDir(null), backupFolder)
+                dir.listFiles()?.sortedByDescending { it.lastModified() }?.forEach { f ->
+                    if (f.name.startsWith("opencode-backup-")) {
+                        out.put(JSONObject().put("name", f.name).put("bytes", f.length()).put("at", f.lastModified()))
+                    }
+                }
+            }
+        } catch (_: Throwable) {
+        }
+        return out.toString()
+    }
+
+    private fun openBackup(name: String): java.io.InputStream? {
+        val leaf = name.substringAfterLast('/').substringAfterLast('\\')
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val where = android.provider.MediaStore.Downloads.DISPLAY_NAME + " = ?"
+            activity.contentResolver.query(
+                android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                arrayOf(android.provider.MediaStore.Downloads._ID), where, arrayOf(leaf), null,
+            )?.use { c ->
+                if (c.moveToFirst()) {
+                    val uri = android.content.ContentUris.withAppendedId(
+                        android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, c.getLong(0)
+                    )
+                    return activity.contentResolver.openInputStream(uri)
+                }
+            }
+            return null
+        }
+        return backupFile(name)?.inputStream()
+    }
+
+    /**
+     * Restore from a file the user picked in the system file picker.
+     *
+     * Android removes an app's MediaStore rows when it is uninstalled, so a
+     * backup made before a reinstall cannot be *listed* afterwards — but the
+     * file is still in Downloads. Picking it is the reliable way back home.
+     */
+    @android.webkit.JavascriptInterface
+    fun restoreRuntimeFromBase64(name: String, base64: String): String {
+        return try {
+            val bytes = android.util.Base64.decode(base64, android.util.Base64.DEFAULT)
+            if (bytes.size < 1000) {
+                return JSONObject().put("ok", false).put("error", "That file is too small to be a backup").toString()
+            }
+            val tmp = java.io.File(activity.cacheDir, "picked-" + System.currentTimeMillis() + ".zip")
+            tmp.writeBytes(bytes)
+            val res = restoreFromStream(tmp.inputStream(), name)
+            tmp.delete()
+            res
+        } catch (t: Throwable) {
+            JSONObject().put("ok", false).put("error", t.message ?: "restore failed").toString()
+        }
+    }
+
+    /**
+     * Replace the runtime's data with a backup.
+     *
+     * The daemon is stopped first so the database file is not open, the current
+     * data is moved aside (never deleted), and unsafe entries in the archive are
+     * refused.
+     */
+    @android.webkit.JavascriptInterface
+    fun restoreRuntimeBackup(name: String): String {
+        return try {
+            val safe = name.substringAfterLast('/').substringAfterLast('\\')
+            if (!safe.startsWith("opencode-backup-") || !safe.endsWith(".zip")) {
+                return JSONObject().put("ok", false).put("error", "That is not a Pocket backup").toString()
+            }
+            val stream = openBackup(safe)
+                ?: return JSONObject().put("ok", false).put("error", "The backup could not be opened").toString()
+            restoreFromStream(stream, safe)
+        } catch (t: Throwable) {
+            JSONObject().put("ok", false).put("error", t.message ?: "restore failed").toString()
+        }
+    }
+
+    private fun restoreFromStream(input: java.io.InputStream, name: String): String {
+        return try {
+            activity.startService(
+                Intent(activity, OpencodeService::class.java).setAction(OpencodeService.ACTION_STOP)
+            )
+            RuntimeSupervisor.reset()
+            // Stopping the service does not stop the daemon it spawned, and a
+            // daemon holding the database open would keep serving the old data.
+            EmbeddedRuntime.killAll(activity)
+            Thread.sleep(1200) // let the database file be released
+
+            val root = runtimeHome()
+            val aside = java.io.File(
+                activity.filesDir, "opencode-home.before-restore-" + System.currentTimeMillis()
+            )
+            if (root.exists() && !root.renameTo(aside)) {
+                throw IllegalStateException("the current data could not be moved aside")
+            }
+            root.mkdirs()
+            val rootPath = root.canonicalPath
+            var files = 0
+            java.util.zip.ZipInputStream(java.io.BufferedInputStream(input)).use { zin ->
+                var entry = zin.nextEntry
+                while (entry != null) {
+                    val target = java.io.File(root, entry.name).canonicalFile
+                    if (!target.path.startsWith(rootPath)) {
+                        throw IllegalStateException("the backup contains an unsafe path")
+                    }
+                    if (entry.isDirectory) {
+                        target.mkdirs()
+                    } else {
+                        target.parentFile?.mkdirs()
+                        target.outputStream().use { zin.copyTo(it) }
+                        files += 1
+                    }
+                    zin.closeEntry()
+                    entry = zin.nextEntry
+                }
+            }
+            JSONObject().put("ok", true).put("files", files).put("keptAside", aside.name).toString()
+        } catch (t: Throwable) {
+            JSONObject().put("ok", false).put("error", t.message ?: "restore failed").toString()
+        }
+    }
+
+    /** Bring the runtime back after a restore, and reload the client. */
+    @android.webkit.JavascriptInterface
+    fun restartAfterRestore() {
+        activity.startService(Intent(activity, OpencodeService::class.java))
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            activity.recreate()
+        }, 2000)
+    }
 
     // ---- APK updates (GitHub releases) -------------------------------------
     @Volatile private var pendingRelease: UpdateManager.Release? = null

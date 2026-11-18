@@ -66,6 +66,16 @@ const state = {
   projects: null,
   commands: null,
   busy: false,
+  // "thinking" until a tool actually runs, then "working"; idle when the turn ends.
+  phase: "idle",
+  sending: false,
+  stopping: false,
+  // set when a prompt was sent but no answer came back: it may or may not have
+  // reached the server, so it is never resent automatically.
+  pendingPrompt: null,
+  net: { status: "online", attempt: 0, max: 8, error: null },
+  lastEventAt: 0,
+  staleTimer: 0,
   attachments: [],
   permissions: [],
   sseStop: null,
@@ -130,6 +140,9 @@ function cacheDom() {
   el.chipModel = $("#chip-model");
   el.chipAgent = $("#chip-agent");
   el.chatStatus = $("#chat-status");
+  el.netBanner = $("#net-banner");
+  el.netText = $("#net-text");
+  el.netRetry = $("#net-retry");
   el.chatDiff = $("#chat-diff");
   el.chatBranch = $("#chat-branch");
   el.chatFind = $("#chat-find");
@@ -366,11 +379,20 @@ async function enterApp() {
   renderSessionSkeleton();
   startEvents();
 
+  // Only an answered request can prove the account is empty. A runtime that is
+  // still starting must not be mistaken for a wiped install.
+  let listed = false;
   try {
     await refreshSessions(true);
+    listed = true;
   } catch (err) {
     handleError(err, "Could not load sessions");
   }
+
+  // A fresh install has no sessions but may still have a backup in Downloads.
+  // Offer it once, never restore on its own — and do not create a new session
+  // behind the sheet, so the choice is not made for the user.
+  if (listed && maybeOfferBackupRestore()) return;
 
   // Never leave a returning user on a blank screen, and never leave a brand
   // new install with nothing to do: restore the last session, or create one
@@ -397,12 +419,10 @@ async function enterApp() {
 
 function startEvents() {
   stopEvents();
-  state.sseStop = state.api.streamEvents(handleEvent, (status) => {
-    state.online = status === "online";
-    if (status === "online") setConnection(state.busy ? "busy" : "online", "Connected");
-    else if (status === "offline") setConnection("offline", "Reconnecting…");
-  });
-  // Reconnect when returning to the app — once, however often events restart.
+  state.sseStop = state.api.streamEvents(handleEvent, applyNetStatus);
+  // Reconnect when returning to the app. The listener outlives an individual
+  // stream so a stream that gave up (or started while the app was
+  // backgrounded) still gets a chance on resume.
   if (!state.visibilityHooked) {
     state.visibilityHooked = true;
     document.addEventListener("visibilitychange", onVisibility);
@@ -412,15 +432,124 @@ function startEvents() {
 function stopEvents() {
   state.sseStop?.();
   state.sseStop = null;
-  document.removeEventListener("visibilitychange", onVisibility);
+}
+
+/** One place decides what the connection state means for the UI. */
+function applyNetStatus(status, info = {}) {
+  state.net = {
+    status,
+    attempt: info.attempt ?? 0,
+    max: info.maxAttempts ?? 8,
+    error: info.error ?? null,
+  };
+
+  if (status === "online") {
+    const wasOffline = !state.online;
+    state.online = true;
+    hideNetBanner();
+    setConnection(state.busy ? "busy" : "online", state.busy ? "Working" : "Connected");
+    // The transcript may have moved on while the socket was down. Re-read it
+    // once instead of trusting a stale window of events.
+    if (wasOffline) recoverAfterReconnect();
+    return;
+  }
+
+  const wasOnline = state.online;
+  state.online = false;
+  if (status === "failed") {
+    setConnection("offline", "Connection lost");
+    showNetBanner("Connection lost. Pocket stopped retrying.", { retry: true });
+  } else if (status === "offline") {
+    const attempt = Math.min(info.attempt ?? 1, info.maxAttempts ?? 8);
+    setConnection("offline", "Reconnecting...");
+    showNetBanner(`Connection lost — retrying (${attempt}/${info.maxAttempts ?? 8})`);
+  } else {
+    // connecting / reconnecting
+    setConnection(state.busy ? "busy" : "offline", "Connecting...");
+    if (!wasOnline) showNetBanner("Connecting...");
+  }
+}
+
+function showNetBanner(text, { retry = false } = {}) {
+  if (!el.netBanner) return;
+  el.netText.textContent = text;
+  el.netRetry.hidden = !retry;
+  el.netBanner.hidden = false;
+}
+
+function hideNetBanner() {
+  if (el.netBanner) el.netBanner.hidden = true;
+}
+
+/** User-triggered retry: never automatic, never a loop. */
+function retryConnection() {
+  showNetBanner("Reconnecting...");
+  if (state.sseStop?.retryNow) state.sseStop.retryNow();
+  else if (state.api) startEvents();
+}
+
+/** Reconcile the open screen with the server after a reconnect. */
+async function recoverAfterReconnect() {
+  if (!state.api) return;
+  try {
+    if (state.screen === "chat" && state.session) {
+      await loadMessages();
+      loadForms();
+      loadInbox();
+      if (state.busy) await verifyTurn();
+    } else {
+      await refreshSessions(false);
+    }
+  } catch {
+    /* the next event or resume will try again */
+  }
+  if (state.pendingPrompt) checkPendingPrompt({ quiet: true }).catch(() => {});
+}
+
+/**
+ * Ask the server whether the open session is still running.
+ *
+ * Events are the fast path, but a phone that was killed, backgrounded or
+ * disconnected can miss the `session.idle`. Without this check the composer
+ * would stay in "Stop" mode forever on a turn that already finished.
+ */
+async function verifyTurn() {
+  if (!state.api || !state.session) return null;
+  const sid = state.session.id;
+  let res;
+  try {
+    res = await state.api.getSession(sid);
+  } catch {
+    return null;
+  }
+  const s = res?.data;
+  if (!s || state.session?.id !== sid) return null;
+  state.session = { ...state.session, ...s };
+  const running = (s.time?.busy ?? 0) > (s.time?.idle ?? 0);
+  if (running) {
+    if (!state.busy) {
+      setBusy(true);
+      setPhase("thinking");
+    }
+  } else if (state.busy) {
+    setBusy(false);
+    state.lastAssistantId = null;
+    await loadMessages().catch(() => {});
+  }
+  return running;
 }
 
 async function onVisibility() {
   if (document.visibilityState !== "visible" || !state.api) return;
-  if (!state.online) {
-    startEvents();
-  }
+  // The socket is very likely dead after a background spell, so re-open it
+  // rather than waiting for a failure to notice.
+  if (state.sseStop?.retryNow) state.sseStop.retryNow();
+  else startEvents();
   if (state.screen === "sessions") refreshSessions(true).catch(() => {});
+  else if (state.session) {
+    loadMessages().catch(() => {});
+    if (state.busy) verifyTurn().catch(() => {});
+  }
 }
 
 /* ---------------------------------------------------------------- session list */
@@ -447,7 +576,7 @@ async function refreshSessions(showSkeleton = false) {
       ),
     ];
     History.putSessions(remote).catch(() => {});
-    state.sessionsCursor = res?.cursor?.previous ?? null;
+    state.sessionsCursor = res?.cursor?.next ?? null;
     renderSessions();
     renderSidebar();
     renderTabs();
@@ -691,15 +820,30 @@ async function askAgain(m) {
     toast("No prompt to repeat");
     return;
   }
-  try {
-    await state.api.prompt(state.session.id, { text: user.text, delivery: "steer" });
-    haptic(8);
-    toast("Asked again");
-    setBusy(true);
-    setTimeout(() => loadMessages().catch(() => {}), 900);
-  } catch (err) {
-    handleError(err, "Could not repeat that prompt");
-  }
+  haptic(8);
+  await deliverPrompt({ text: user.text, files: [], delivery: "steer" });
+  if (!state.pendingPrompt) toast("Asked again");
+}
+
+/** A finished answer stopped at the output limit: one manual continuation. */
+async function continueAnswer(m) {
+  if (!state.session) return;
+  if (state.busy) return toast("Wait for this turn to finish");
+  if (state.sending) return toast("Still sending the last message");
+  if (hasContinuationAfter(m)) return toast("Already continued");
+  await deliverPrompt({ text: CONTINUE_PROMPT, files: [], delivery: "steer", synthetic: true });
+}
+
+async function retryAnswer(m) {
+  const ok = await confirmSheet({
+    title: "Retry this answer?",
+    note: "The partial answer stays in the transcript. Retry sends the original prompt again as a new run.",
+    confirmLabel: "Retry",
+    kind: "retry-answer",
+  });
+  if (!ok) return;
+  closeSheet();
+  await askAgain(m);
 }
 
 function openMessageSheet(m) {
@@ -779,16 +923,66 @@ function setChatHeader() {
 
 function setBusy(busy) {
   state.busy = busy;
+  if (!busy) state.stopping = false;
   if (el.deliveryToggle) {
     el.deliveryToggle.hidden = !busy;
     el.deliveryToggle.querySelector("span").textContent = state.delivery === "queue" ? "Queue" : "Steer";
     el.deliveryToggle.classList.toggle("queue", state.delivery === "queue");
   }
-  el.chatStatus.hidden = !busy;
-  el.chatStatus.querySelector("span").textContent = "Working";
-  setConnection(busy ? "busy" : state.online ? "online" : "offline", busy ? "Working" : "Connected");
+  setPhase(busy ? state.phase === "idle" ? "thinking" : state.phase : "idle");
   updateSendButton();
   updateChatStatus();
+  if (busy) armStaleWatch();
+  else clearStaleWatch();
+}
+
+/**
+ * "Thinking" is the model working before any tool runs; "Working" means a tool
+ * is actually executing. They are different states, and the header says which.
+ */
+function setPhase(phase) {
+  state.phase = phase;
+  const live = state.busy && phase !== "idle";
+  el.chatStatus.hidden = !state.busy;
+  el.chatStatus.querySelector("span").textContent = phase === "thinking" ? "Thinking" : "Working";
+  el.chatStatus.classList.toggle("thinking", phase === "thinking");
+  setConnection(
+    live ? "busy" : state.online ? "online" : "offline",
+    live ? (phase === "thinking" ? "Thinking" : "Working") : state.online ? "Connected" : "Offline"
+  );
+}
+
+/**
+ * "Working" is only true while a tool is actually executing. Once the last tool
+ * in the turn finishes and the model writes again, the header goes back to
+ * "Thinking": the two states must never be blurred into one.
+ */
+function phaseFromTools() {
+  if (!state.busy) return;
+  const running = state.messages.some(
+    (m) => m.type === "assistant" && (m.content ?? []).some((p) => p.type === "tool" && toolStatus(p) === "running")
+  );
+  setPhase(running ? "working" : "thinking");
+}
+
+/** While a turn is open, a periodic check asks the server whether it is still
+ *  running. Without it, an app killed mid-run could show "Working" forever. */
+function armStaleWatch() {
+  clearStaleWatch();
+  state.staleTimer = setTimeout(() => {
+    state.staleTimer = 0;
+    if (!state.busy) return;
+    if (!state.online) {
+      state.staleTimer = setTimeout(() => armStaleWatch(), 30000);
+      return;
+    }
+    verifyTurn().catch(() => {});
+  }, 45000);
+}
+
+function clearStaleWatch() {
+  if (state.staleTimer) clearTimeout(state.staleTimer);
+  state.staleTimer = 0;
 }
 
 function updateChatStatus() {
@@ -898,7 +1092,9 @@ async function loadMessages() {
   try {
     const res = await state.api.messages(state.session.id, { limit: 80, order: "desc" });
     state.messages = (res?.data ?? []).slice().reverse();
-    state.messagesCursor = res?.cursor?.previous ?? null;
+    // `cursor.next` is the page of *older* messages: a long task is never cut
+    // off at the top of the screen.
+    state.messagesCursor = res?.cursor?.next ?? null;
     // Keep an on-device recovery copy. It is never expired or auto-deleted.
     History.putSession(state.session).catch(() => {});
     History.putMessages(state.session.id, state.messages).catch(() => {});
@@ -920,6 +1116,76 @@ async function loadMessages() {
     }
   } finally {
     state.messagesLoading = false;
+  }
+}
+
+/**
+ * Fetch the page of messages before the current window.
+ *
+ * The API hands out the newest page first, so a long task would otherwise be
+ * cut off at the top of the screen with no way back to how it started.
+ */
+async function loadOlderMessages() {
+  if (!state.api || !state.session || !state.messagesCursor) return;
+  const cursor = state.messagesCursor;
+  const btn = $("[data-load-older]", el.messages);
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Loading earlier...";
+  }
+  state.messagesLoading = true;
+  // Hold the reader's place: the page is inserted above the viewport, so the
+  // node under the top edge is found now and realigned afterwards.
+  const atBottom = isNearBottom();
+  const anchor = atBottom
+    ? null
+    : [...el.messages.querySelectorAll("[data-msg]")].find((n) => n.getBoundingClientRect().bottom > 0) ?? null;
+  const anchorId = anchor?.dataset.msg ?? null;
+  const anchorTop = anchor ? anchor.getBoundingClientRect().top : 0;
+  try {
+    const res = await state.api.messages(state.session.id, { limit: 80, order: "desc", cursor });
+    const older = (res?.data ?? []).slice().reverse();
+    state.messagesCursor = res?.cursor?.next ?? null;
+    const seen = new Set(state.messages.map((m) => m.id));
+    state.messages = [...older.filter((m) => !seen.has(m.id)), ...state.messages];
+    History.putMessages(state.session.id, state.messages).catch(() => {});
+    renderMessages(false);
+    if (atBottom) {
+      scrollToBottom(false);
+    } else if (anchorId) {
+      const node = el.messages.querySelector(`[data-msg="${CSS.escape(anchorId)}"]`);
+      if (node) el.messages.scrollTop += node.getBoundingClientRect().top - anchorTop;
+    }
+  } catch (err) {
+    handleError(err, "Could not load earlier messages");
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "Load earlier messages";
+    }
+  } finally {
+    state.messagesLoading = false;
+  }
+}
+
+/**
+ * Drop a selection whose content no longer exists.
+ *
+ * The transcript is rebuilt from scratch on every event, so a selection made
+ * during a streaming answer can end up anchored to a node that has just been
+ * thrown away. Android keeps its floating selection toolbar for that dead
+ * selection, which is how a stray Copy/Select-all bar appeared during normal
+ * chat. A selection the user can still see is left alone.
+ */
+function pruneSelection() {
+  try {
+    const sel = window.getSelection?.();
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return;
+    const anchor = sel.anchorNode;
+    const focus = sel.focusNode;
+    const dead = (n) => n && !document.contains(n);
+    if (dead(anchor) || dead(focus)) sel.removeAllRanges();
+  } catch {
+    /* selection is a nice-to-have, never a crash */
   }
 }
 
@@ -1389,6 +1655,11 @@ function renderAssistant(m, opts = {}) {
       }</div>`
     : "";
   const failure = m.error ? renderFailure(m.error) : "";
+  // Only a *finished* run can be called incomplete: while the turn is open the
+  // server is still working, and a mid-turn length stop is its normal signal to
+  // continue in smaller steps.
+  const partial =
+    !state.busy && !turnLive && showMeta && finishIsLimit(m) && !hasContinuationAfter(m) ? limitCard(m) : "";
   const empty =
     !html && !failure && streaming ? `<div class="typing-row"><span class="typing"><i></i><i></i><i></i></span></div>` : "";
 
@@ -1399,7 +1670,7 @@ function renderAssistant(m, opts = {}) {
 
   return `
     <div class="msg msg-assistant" data-msg="${escapeHtml(m.id)}">
-      <div class="assistant-body">${html}${retry}${failure}${empty}</div>
+      <div class="assistant-body">${html}${retry}${failure}${partial}${empty}</div>
       ${artifactCards(m)}
       ${showMeta && !turnLive ? stamp(m) : ""}
       ${turnLive || !showMeta ? "" : assistantActions(m)}
@@ -1417,6 +1688,11 @@ function fileSrc(f) {
 }
 
 function renderUser(m) {
+  // The continuation prompt is an instruction from the app, not a message the
+  // user typed. Show what happened instead of a fake prompt bubble.
+  if (isContinuationText(m.text)) {
+    return renderSystem("Continued after the output limit", "spark");
+  }
   const files = (m.files ?? [])
     .filter((f) => (f.mime ?? "image/jpeg").startsWith("image/"))
     .map((f) => ({ ...f, src: fileSrc(f) }))
@@ -1435,6 +1711,66 @@ function renderUser(m) {
 
 function renderSystem(text, iconName = "check") {
   return `<div class="msg msg-system"><span class="sys">${icon(iconName)}${escapeHtml(text)}</span></div>`;
+}
+
+/* ---------------------------------------------------- output token limit
+ * `finish: "length"` is a step-level fact. OpenCode handles it mid-turn by
+ * injecting a synthetic instruction ("Your last response hit the output token
+ * limit…") and letting the agent split the work, so a length step is not a
+ * truncated answer. Only the last answer of a finished turn, with no
+ * continuation after it, is presented as partial.
+ */
+const LIMIT_NOTICE = /output token limit|stop reason:\s*length|hit the output token limit/i;
+const CONTINUE_PROMPT =
+  "Continue from exactly where your previous message stopped. Do not repeat anything you already wrote, do not apologize, and do not restart the task. Break the remaining work into smaller pieces.";
+
+const isLimitNotice = (text) => LIMIT_NOTICE.test(String(text ?? ""));
+const isContinuationText = (text) => String(text ?? "").trim() === CONTINUE_PROMPT;
+const finishIsLimit = (m) => m?.finish === "length" || isLimitNotice(m?.error?.message);
+
+function hasContinuationAfter(m) {
+  const idx = state.messages.indexOf(m);
+  if (idx < 0) return false;
+  return state.messages.slice(idx + 1).some(
+    (x) =>
+      (x.type === "synthetic" && isLimitNotice(x.text)) ||
+      (x.type === "user" && isContinuationText(x.text))
+  );
+}
+
+function renderSynthetic(m) {
+  const text = m.description || m.text || "";
+  if (isLimitNotice(text)) {
+    return `<div class="msg msg-system sys-limit"><span class="sys">${icon("stop")}Output limit hit — the agent is continuing in smaller steps</span></div>`;
+  }
+  return renderSystem(text, "spark");
+}
+
+function pendingPromptCard() {
+  const p = state.pendingPrompt;
+  if (!p) return "";
+  return `<div class="limit-card pending-card">
+    <div class="limit-head">${icon("wifi")}<span>Message not confirmed</span></div>
+    <p>${escapeHtml(p.error || "The server did not answer.")} It may or may not have received this message, so Pocket will not send it again by itself.</p>
+    <div class="limit-actions">
+      <button class="btn btn-primary btn-sm" type="button" data-pending="check">Check server</button>
+      <button class="btn btn-sm" type="button" data-pending="resend">Send again</button>
+      <button class="btn btn-sm" type="button" data-pending="discard">Discard</button>
+    </div>
+  </div>`;
+}
+
+/** Shown only for a turn that ended while still cut off (see renderAssistant). */
+function limitCard(m) {
+  const id = escapeHtml(m.id);
+  return `<div class="limit-card" data-limit-for="${id}">
+    <div class="limit-head">${icon("stop")}<span>Answer cut at the output limit</span></div>
+    <p>OpenCode keeps a long task going by splitting it into steps, and this turn ended before the task did. Continue asks it to carry on from here without repeating itself; Retry runs the original prompt again as a new turn.</p>
+    <div class="limit-actions">
+      <button class="btn btn-primary btn-sm" type="button" data-limit="continue" data-msg-id="${id}">Continue</button>
+      <button class="btn btn-sm" type="button" data-limit="retry" data-msg-id="${id}">Retry</button>
+    </div>
+  </div>`;
 }
 
 const fmtWait = (ms) => {
@@ -1497,11 +1833,14 @@ function transcriptSignature() {
     state.prefs.verbosity,
     state.prefs.timestamps ? "ts" : "",
     state.prefs.showFollowUps ? "fu" : "",
+    state.messagesCursor ?? "-",
+    state.pendingPrompt?.status ?? "-",
   ];
   for (const f of state.forms) bits.push(f.form?.id ?? "", f.status);
   for (const m of state.messages) {
     bits.push(m.id, m.type);
     if (m.type === "assistant") {
+      bits.push(m.finish ?? "");
       for (const p of m.content ?? []) {
         bits.push(
           p.type,
@@ -1818,6 +2157,14 @@ function renderMessages(force = false) {
     }
   }
 
+  // Long sessions arrive one page at a time; earlier pages stay one tap away
+  // instead of being silently unreachable.
+  if (state.messagesCursor && state.messages.length) {
+    chunks.push(
+      `<div class="load-older-row"><button class="btn btn-sm" type="button" data-load-older>Load earlier messages</button></div>`
+    );
+  }
+
   let shownFailure = null;
   for (const m of state.messages) {
     const turn = turns[turnIndex.get(m)] ?? null;
@@ -1846,7 +2193,7 @@ function renderMessages(force = false) {
     } else if (m.type === "shell") chunks.push(renderShell(m));
     else if (m.type === "compaction") chunks.push(renderCompaction(m));
     else if (m.type === "skill") chunks.push(renderSystem(`Skill · ${m.name ?? m.skill ?? ""}`, "spark"));
-    else if (m.type === "synthetic" && m.text) chunks.push(renderSystem(m.description || m.text, "spark"));
+    else if (m.type === "synthetic" && m.text) chunks.push(renderSynthetic(m));
     else if (m.type === "system" && m.text) chunks.push(renderSystem(m.description || m.text, "spark"));
     else if (m.type === "agent-switched") chunks.push(renderSystem(`Agent · ${m.agent ?? ""}`, "spark"));
     else if (m.type === "model-switched") chunks.push(renderSystem(`Model · ${m.model?.id ?? ""}`, "spark"));
@@ -1858,6 +2205,7 @@ function renderMessages(force = false) {
     if (!entry?.form) continue;
     chunks.push(formCardHtml(entry.form, { status: entry.status, answer: entry.answer, values: entry.values }));
   }
+  if (state.pendingPrompt?.status === "unknown") chunks.push(pendingPromptCard());
 
   if (!chunks.length) {
     el.messages.innerHTML = welcomeHtml();
@@ -1873,6 +2221,7 @@ function renderMessages(force = false) {
   }
 
   el.messages.innerHTML = chunks.join("");
+  pruneSelection();
   for (const n of $$(".tool-card", el.messages)) if (openTools.has(n.dataset.tool)) n.classList.add("open");
   for (const n of $$(".reasoning", el.messages)) if (openReasoning.has(n.dataset.reasoning)) n.classList.add("open");
   for (const n of $$(".activity", el.messages)) if (openActivity.has(n.dataset.activity)) n.classList.add("open");
@@ -2081,6 +2430,7 @@ function updateStreamingText() {
   }
   const pinned = isNearBottom();
   node.innerHTML = renderMarkdown(part.text) + `<span class="stream-caret"></span>`;
+  pruneSelection();
   if (pinned) scrollToBottom(false);
 }
 
@@ -2139,10 +2489,12 @@ function handleEvent(event) {
   }
 
   if (type === "server.connected") {
-    state.online = true;
-    setConnection(state.busy ? "busy" : "online", "Connected");
-    if (state.screen === "chat") scheduleMessageRefresh(200);
-    else refreshSessions(false).catch(() => {});
+    const wasOffline = !state.online;
+    applyNetStatus("online");
+    if (!wasOffline) {
+      if (state.screen === "chat") scheduleMessageRefresh(200);
+      else refreshSessions(false).catch(() => {});
+    }
     return;
   }
 
@@ -2175,6 +2527,7 @@ function handleEvent(event) {
   switch (type) {
     case "session.execution.started":
       setBusy(true);
+      setPhase("thinking");
       break;
     case "session.execution.succeeded":
     case "session.execution.failed":
@@ -2183,6 +2536,11 @@ function handleEvent(event) {
       setBusy(false);
       state.lastAssistantId = null;
       scheduleMessageRefresh(250);
+      // A prompt that was ambiguous may have landed; the reload above is the
+      // moment the truth exists on disk.
+      setTimeout(() => {
+        if (state.pendingPrompt) checkPendingPrompt({ quiet: true }).catch(() => {});
+      }, 700);
       break;
     case "session.todo.updated": {
       // The checklist is published whole, not incrementally. Keep the last list
@@ -2197,6 +2555,7 @@ function handleEvent(event) {
       const m = ensureAssistant(data.assistantMessageID, data);
       m.retry = { attempt: data.attempt ?? 1, error: data.error };
       setBusy(true);
+      setPhase("thinking");
       renderMessages();
       break;
     }
@@ -2210,13 +2569,20 @@ function handleEvent(event) {
     }
     case "session.step.ended": {
       const m = state.messages.find((x) => x.id === data.assistantMessageID);
-      if (m) m.finish = data.finish;
+      if (m) {
+        m.finish = data.finish;
+        // A length stop is normal mid-turn: OpenCode continues with smaller
+        // steps. Keep the fact (the renderer decides what to show), and let the
+        // idle event be the only thing that completes the turn.
+        if (finishIsLimit(m)) renderMessages();
+      }
       break;
     }
     case "session.step.started": {
       state.lastAssistantId = data.assistantMessageID;
       ensureAssistant(data.assistantMessageID, { ...data, started: data.started });
       setBusy(true);
+      if (state.phase === "idle") setPhase("thinking");
       if (!isNearBottom()) updateJumpLatest();
       break;
     }
@@ -2290,6 +2656,7 @@ function handleEvent(event) {
       if (!m.content.some((p) => p.type === "tool" && p.id === data.id)) {
         m.content.push({ type: "tool", id: data.id, name: data.name, executed: false, state: { status: "running", input: {} } });
       }
+      setPhase("working");
       renderMessages();
       break;
     }
@@ -2301,6 +2668,7 @@ function handleEvent(event) {
         m.content.push(part);
       }
       part.state = { ...(part.state ?? {}), status: "running", input: data.input ?? part.state?.input };
+      setPhase("working");
       renderMessages();
       break;
     }
@@ -2317,6 +2685,7 @@ function handleEvent(event) {
         };
         part.executed = data.executed ?? true;
       }
+      phaseFromTools();
       renderMessages();
       break;
     }
@@ -2332,6 +2701,7 @@ function handleEvent(event) {
           metadata: data.metadata,
         };
       }
+      phaseFromTools();
       renderMessages();
       break;
     }
@@ -2534,67 +2904,180 @@ async function sendMessage() {
     await interrupt();
     return;
   }
+  if (!text && !state.attachments.length) return;
+  if (state.sending) {
+    toast("Still sending the last message");
+    return;
+  }
+
   // While a turn is running the server accepts two meanings for a prompt: join
   // the run (steer) or wait for it (queue). The composer exposes the choice.
   const delivery = state.busy ? state.delivery : "steer";
-  if (!text && !state.attachments.length) return;
-
   const files = attachmentsPayload();
   el.input.value = "";
   autoGrow();
   state.attachments = [];
   renderAttachments();
   updateSendButton();
+  await deliverPrompt({ text, files, delivery, command: text.startsWith("/") });
+}
 
-  // optimistic user message
-  const localId = "local_" + Date.now();
-  state.messages.push({
-    id: localId,
-    type: "user",
-    text,
-    files: files.map((f) => ({ uri: f.uri, mime: "image/jpeg", name: f.name })),
-    time: { created: Date.now() },
-  });
-  renderMessages(true);
-  scrollToBottom(true);
-  setBusy(true);
-  state.lastAssistantId = null;
-  renderMessages();
-
+const deviceOffline = () => {
   try {
-    if (text.startsWith("/")) {
+    return navigator.onLine === false;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Every prompt goes through here, so duplicate protection and the "did the
+ * server get it?" question have exactly one answer.
+ *
+ * A dropped connection during POST /prompt is ambiguous: the server may have
+ * accepted the message before the socket died. It is therefore never resent
+ * automatically. Instead the transcript keeps a card that lets the user check,
+ * resend once, or discard.
+ */
+async function deliverPrompt({ text, files = [], delivery = "steer", synthetic = false, command = false }) {
+  if (!state.session || !state.api) return;
+  if (state.sending) {
+    toast("Still sending the last message");
+    return;
+  }
+  if (!state.online) {
+    toast(deviceOffline() ? "You are offline — reconnect first" : "Not connected to the server");
+    return;
+  }
+  const sid = state.session.id;
+  const localId = "local_" + Date.now() + Math.random().toString(36).slice(2, 6);
+  const record = {
+    id: localId,
+    sessionID: sid,
+    text,
+    files,
+    delivery,
+    synthetic,
+    at: Date.now(),
+    status: "sending",
+    error: "",
+  };
+  state.pendingPrompt = record;
+  state.sending = true;
+  if (!synthetic) {
+    state.messages.push({
+      id: localId,
+      type: "user",
+      text,
+      files: (files ?? []).map((f) => ({ uri: f.uri, name: f.name, mime: "image/jpeg" })),
+      time: { created: record.at },
+    });
+    renderMessages(true);
+    scrollToBottom(true);
+  }
+  setBusy(true);
+  setPhase("thinking");
+  try {
+    if (command && text.startsWith("/")) {
       const match = text.match(/^\/(\S+)\s*([\s\S]*)$/);
-      await state.api.command(state.session.id, {
-        name: match?.[1] ?? "help",
-        text: match?.[2] ?? "",
-        files,
-      });
+      await state.api.command(sid, { name: match?.[1] ?? "help", text: match?.[2] ?? "", files });
     } else {
-      await state.api.prompt(state.session.id, { text, files, delivery });
+      await state.api.prompt(sid, { text, files, delivery });
     }
+    record.status = "accepted";
+    state.pendingPrompt = null;
     haptic(6);
     if (delivery === "queue") {
       toast("Queued — runs after this turn");
       loadInbox().catch(() => {});
     }
     setTimeout(() => {
+      if (state.session?.id !== sid) return;
       state.messages = state.messages.filter((m) => m.id !== localId);
       loadMessages().catch(() => {});
-    }, 900);
+    }, 800);
   } catch (err) {
+    const ambiguous = !err?.status || err.status === 0 || err.retryable;
+    if (!ambiguous) {
+      // A clear refusal: the message was not accepted, so undo the bubble and
+      // put the text back where the user can fix it.
+      state.pendingPrompt = null;
+      state.messages = state.messages.filter((m) => m.id !== localId);
+      if (!synthetic) {
+        el.input.value = text;
+        autoGrow();
+        updateSendButton();
+      }
+      setBusy(false);
+      renderMessages(true);
+      handleError(err, "Message failed");
+      return;
+    }
+    record.status = "unknown";
+    record.error = err?.message || "The server did not answer";
     setBusy(false);
-    renderMessages();
-    handleError(err, "Message failed");
+    renderMessages(true);
+    haptic(18);
+  } finally {
+    state.sending = false;
+    updateSendButton();
   }
+}
+
+async function checkPendingPrompt({ quiet = false } = {}) {
+  const pending = state.pendingPrompt;
+  if (!pending || !state.api) return false;
+  await loadMessages().catch(() => {});
+  const found = state.messages.some(
+    (m) => m.type === "user" && m.text === pending.text && (m.time?.created ?? 0) >= pending.at - 5000
+  );
+  if (found) {
+    state.pendingPrompt = null;
+    renderMessages(true);
+    if (!quiet) toast("The server received it");
+    return true;
+  }
+  if (!quiet) toast("Not on the server yet");
+  return false;
+}
+
+async function resendPendingPrompt() {
+  const pending = state.pendingPrompt;
+  if (!pending || state.sending) return;
+  state.pendingPrompt = null;
+  state.messages = state.messages.filter((m) => m.id !== pending.id);
+  renderMessages(true);
+  await deliverPrompt({ text: pending.text, files: pending.files, delivery: pending.delivery, synthetic: pending.synthetic });
+}
+
+function discardPendingPrompt() {
+  const pending = state.pendingPrompt;
+  if (!pending) return;
+  state.pendingPrompt = null;
+  state.messages = state.messages.filter((m) => m.id !== pending.id);
+  renderMessages(true);
+  toast("Discarded");
 }
 
 async function interrupt() {
   if (!state.session) return;
+  if (state.stopping) return;
+  if (!state.online) {
+    toast("Can't reach the server to stop — reconnect and try again");
+    return;
+  }
+  state.stopping = true;
+  const sid = state.session.id;
   try {
-    await state.api.interrupt(state.session.id);
+    await state.api.interrupt(sid);
     haptic(14);
     toast("Stopping…");
+    // If no idle arrives, ask the server whether the run is still open.
+    setTimeout(() => {
+      if (state.session?.id === sid && state.busy) verifyTurn().catch(() => {});
+    }, 6000);
   } catch (err) {
+    state.stopping = false;
     handleError(err, "Could not stop");
   }
 }
@@ -5906,6 +6389,162 @@ function openPrefsStudio() {
   });
 }
 
+/* ------------------------------------------- server data: backup / restore
+ * The runtime's own store is authoritative history and it lives in app-private
+ * storage, which Android deletes on uninstall. These paths move a copy out to
+ * Downloads and back, and they never run on their own.
+ */
+
+function nativeBackups() {
+  try {
+    return JSON.parse(window.PocketNative?.listRuntimeBackups?.() ?? "[]");
+  } catch {
+    return [];
+  }
+}
+
+function prettyBytes(n) {
+  const v = Number(n) || 0;
+  if (v < 1024) return `${v} B`;
+  if (v < 1024 * 1024) return `${(v / 1024).toFixed(0)} KB`;
+  return `${(v / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+async function backupServerData() {
+  if (!window.PocketNative?.backupRuntime) return toast("Backing up needs the app (not a browser)");
+  const raw = window.PocketNative.backupRuntime();
+  let res = {};
+  try {
+    res = JSON.parse(raw || "{}");
+  } catch {}
+  if (!res.ok) return toast(res.error || "Backup failed");
+  haptic(8);
+  toast(`Backed up ${res.entries} files to ${res.where ?? "Downloads"}`);
+}
+
+async function restoreBackup(name) {
+  if (!window.PocketNative?.restoreRuntimeBackup) return toast("Restoring needs the app (not a browser)");
+  toast("Restoring…");
+  const raw = window.PocketNative.restoreRuntimeBackup(name);
+  let res = {};
+  try {
+    res = JSON.parse(raw || "{}");
+  } catch {}
+  if (!res.ok) return handleError(new ApiError(res.error || "Restore failed", 0), "Could not restore");
+  haptic(12);
+  toast("Restored — reloading");
+  window.PocketNative.restartAfterRestore?.();
+}
+
+/**
+ * Restore from a file the user picks.
+ *
+ * A backup made before a reinstall cannot be listed afterwards — Android drops
+ * an app's Downloads rows when it is uninstalled — but the file is still there.
+ */
+function pickBackupFile() {
+  const picker = document.createElement("input");
+  picker.type = "file";
+  picker.accept = ".zip,application/zip";
+  picker.addEventListener("change", async () => {
+    const file = picker.files?.[0];
+    if (!file) return;
+    if (!window.PocketNative?.restoreRuntimeFromBase64) return toast("Restoring needs the app (not a browser)");
+    toast("Reading the backup…");
+    try {
+      const buf = new Uint8Array(await file.arrayBuffer());
+      let bin = "";
+      for (let i = 0; i < buf.length; i += 0x8000) {
+        bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+      }
+      const res = JSON.parse(window.PocketNative.restoreRuntimeFromBase64(file.name, btoa(bin)) || "{}");
+      if (!res.ok) return handleError(new ApiError(res.error || "Restore failed", 0), "Could not restore");
+      haptic(12);
+      toast("Restored — reloading");
+      window.PocketNative.restartAfterRestore?.();
+    } catch (err) {
+      handleError(err, "Could not restore that file");
+    }
+  });
+  picker.click();
+}
+
+function openServerBackups() {
+  const backups = nativeBackups();
+  openSheet({
+    title: "Server backups",
+    body: (root) => {
+      root.innerHTML =
+        `<p class="sheet-note">Restoring replaces the runtime's sessions, settings and logins with the backup. The data in use now is moved aside, never deleted.</p>` +
+        backups
+          .map(
+            (b) => `<button class="sheet-item" data-restore="${escapeHtml(b.name)}">
+              <span class="si-icon">${icon("download")}</span>
+              <span class="si-text"><span class="si-title">${escapeHtml(b.name.replace(/^opencode-backup-/, "").replace(/\.zip$/, ""))}</span>
+              <span class="si-sub">${prettyBytes(b.bytes)} · ${escapeHtml(new Date(b.at || 0).toLocaleString())}</span></span>
+            </button>`
+          )
+          .join("") +
+        `<button class="sheet-item" data-pick-backup>
+          <span class="si-icon">${icon("folder")}</span>
+          <span class="si-text"><span class="si-title">Choose a backup file…</span>
+          <span class="si-sub">From Downloads, e.g. after a reinstall</span></span>
+        </button>`;
+      root.addEventListener("click", async (e) => {
+        if (e.target.closest("[data-pick-backup]")) {
+          closeSheet();
+          pickBackupFile();
+          return;
+        }
+        const btn = e.target.closest("[data-restore]");
+        if (!btn) return;
+        const ok = await confirmSheet({
+          title: "Restore this backup?",
+          note: "The runtime restarts and Pocket reloads with the restored sessions.",
+          confirmLabel: "Restore",
+          kind: "restore-backup",
+        });
+        if (!ok) return;
+        closeSheet();
+        restoreBackup(btn.dataset.restore);
+      });
+    },
+  });
+}
+
+/** Offered once per launch, and only when there is nothing to lose. */
+function maybeOfferBackupRestore() {
+  if (state.demo || state.backupOffered || state.sessions.length) return false;
+  if (!window.PocketNative?.listRuntimeBackups) return false;
+  state.backupOffered = true;
+  const backups = nativeBackups();
+  const newest = backups[0];
+  openSheet({
+    title: "Nothing here yet",
+    body: (root) => {
+      const known = newest
+        ? `A Pocket backup from ${escapeHtml(new Date(newest.at || 0).toLocaleString())} is in Downloads.`
+        : `If you saved a Pocket backup before reinstalling, it is still in Downloads.`;
+      root.innerHTML = `<p class="sheet-note">No sessions were found on this device. ${known} Restoring brings the conversations back with their original ids — nothing is deleted either way.</p>
+      <div class="permission-actions"><button class="btn btn-ghost" data-cancel>Not now</button>
+      <button class="btn btn-ghost" data-pick>Choose a file…</button>
+      ${newest ? `<button class="btn btn-primary" data-confirm>Restore ${escapeHtml(newest.name.replace(/^opencode-backup-/, "").replace(/\.zip$/, ""))}</button>` : ""}</div>`;
+      root.addEventListener("click", (e) => {
+        if (e.target.closest("[data-cancel]")) return closeSheet();
+        if (e.target.closest("[data-pick]")) {
+          closeSheet();
+          pickBackupFile();
+          return;
+        }
+        if (!e.target.closest("[data-confirm]")) return;
+        closeSheet();
+        restoreBackup(newest.name);
+      });
+    },
+  });
+  return true;
+}
+
 function openSettings() {
   openSheet({
     kind: "settings",
@@ -5948,6 +6587,12 @@ function openSettings() {
               : ""
           }
           ${sheetSettingRow("download", "Updates", "Pocket app and OpenCode engine", "open-updates")}
+          ${
+            window.PocketNative?.backupRuntime
+              ? `${sheetSettingRow("download", "Back up server data", "Sessions, settings and logins to Downloads", "server-backup")}
+                 ${sheetSettingRow("download", "Restore server backup", "Bring back sessions after a reinstall", "server-restore")}`
+              : ""
+          }
           ${sheetSettingRow("download", "Import a session", "From a JSON export", "import-session")}
           ${sheetSettingRow("download", "Export local history", "Backup every saved conversation", "history-export")}
           ${sheetSettingRow("download", "Import local history", "Restore a Pocket backup", "history-import")}
@@ -6052,6 +6697,14 @@ function openSettings() {
         }
         if (e.target.closest("#open-updates")) {
           openUpdatesSheet();
+          return;
+        }
+        if (e.target.closest("#server-backup")) {
+          backupServerData();
+          return;
+        }
+        if (e.target.closest("#server-restore")) {
+          openServerBackups();
           return;
         }
         if (e.target.closest("#import-session")) {
@@ -6260,6 +6913,28 @@ function defaultHint() {
 function handleError(err, fallback) {
   console.error(err);
   if (err instanceof ApiError && err.status === 401) {
+    // The built-in runtime rotates its password every time it restarts, so a
+    // 401 in the app usually means "the daemon came back with a new secret",
+    // not "the user is logged out". Adopt the secret the shell already has
+    // before falling back to the connect screen.
+    const cfg = (() => {
+      try {
+        return JSON.parse(window.PocketNative?.getConfig?.() ?? "{}");
+      } catch {
+        return {};
+      }
+    })();
+    if (cfg.base && cfg.secret && (cfg.secret !== state.secret || cfg.base !== state.base)) {
+      state.base = cfg.base;
+      state.secret = cfg.secret;
+      state.api = new Api(cfg.base, cfg.secret);
+      store.set("base", cfg.base);
+      store.set("secret", cfg.secret);
+      setConnection("online", "Connected");
+      startEvents();
+      toast("Reconnected to the runtime");
+      return;
+    }
     toast("Session expired — reconnect");
     setConnection("offline", "Unauthorized");
     store.del("secret");
@@ -6379,6 +7054,10 @@ function bindEvents() {
 
   // messages interactions
   el.messages.addEventListener("click", async (e) => {
+    if (e.target.closest("[data-load-older]")) {
+      loadOlderMessages();
+      return;
+    }
     const starter = e.target.closest("[data-starter]");
     if (starter) {
       const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
@@ -6434,6 +7113,26 @@ function bindEvents() {
     const openBtn = e.target.closest("[data-code-open]");
     if (openBtn) {
       openCodeViewer(openBtn.closest(".code-block"));
+      return;
+    }
+
+    // partial answer actions (output token limit)
+    const limitBtn = e.target.closest("[data-limit]");
+    if (limitBtn) {
+      const m = state.messages.find((x) => x.id === limitBtn.dataset.msgId);
+      if (m) {
+        if (limitBtn.dataset.limit === "continue") continueAnswer(m);
+        else retryAnswer(m);
+      }
+      return;
+    }
+
+    const pendingBtn = e.target.closest("[data-pending]");
+    if (pendingBtn) {
+      const act = pendingBtn.dataset.pending;
+      if (act === "check") checkPendingPrompt();
+      else if (act === "resend") resendPendingPrompt();
+      else discardPendingPrompt();
       return;
     }
 
@@ -6663,10 +7362,12 @@ function bindEvents() {
   el.connDot.addEventListener("click", () => {
     if (state.online) toast("Connected");
     else {
-      startEvents();
+      retryConnection();
       toast("Reconnecting…");
     }
   });
+
+  el.netRetry?.addEventListener("click", retryConnection);
 
   // artifact workspace
   el.artifactBack?.addEventListener("click", () => closeArtifact(false));

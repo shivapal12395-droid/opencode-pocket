@@ -10,9 +10,27 @@ export class ApiError extends Error {
     this.status = status;
     this.body = body;
   }
+
+  /** A status of 0 means the request never got an answer. */
+  get retryable() {
+    return this.status === 0 || this.status === 408 || this.status === 429 || this.status >= 500;
+  }
+
+  get offline() {
+    return this.status === 0;
+  }
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const jitter = (ms) => Math.round(ms * (0.8 + Math.random() * 0.4));
+
+const deviceOffline = () => {
+  try {
+    return typeof navigator !== "undefined" && navigator.onLine === false;
+  } catch {
+    return false;
+  }
+};
 
 export function normalizeBase(input) {
   let raw = String(input || "").trim();
@@ -74,7 +92,34 @@ export class Api {
     return basicAuth(this.secret);
   }
 
-  async request(method, path, body, { timeout = 30000, signal, headers = {} } = {}) {
+  async request(method, path, body, { timeout = 30000, signal, headers = {}, retries } = {}) {
+    // Reads are idempotent, so a dropped connection is retried a couple of
+    // times. Writes are never retried automatically: the server may have
+    // accepted the prompt/tool call, and a second copy is worse than a visible
+    // error. Callers that want a retry on a write must ask for it explicitly.
+    const safe = method === "GET";
+    const attempts = retries ?? (safe ? 2 : 0);
+    let lastErr = null;
+    for (let attempt = 0; attempt <= attempts; attempt += 1) {
+      if (attempt > 0) await sleep(jitter(Math.min(4000, 350 * 2 ** (attempt - 1))));
+      if (deviceOffline()) {
+        lastErr = new ApiError("The device is offline", 0, null);
+        if (attempt >= attempts) throw lastErr;
+        continue;
+      }
+      try {
+        return await this.#requestOnce(method, path, body, { timeout, signal, headers });
+      } catch (err) {
+        lastErr = err;
+        if (signal?.aborted) throw err;
+        const retryable = err instanceof ApiError ? err.retryable : err?.name === "TypeError";
+        if (!retryable || attempt >= attempts) throw err;
+      }
+    }
+    throw lastErr ?? new ApiError("Request failed", 0, null);
+  }
+
+  async #requestOnce(method, path, body, { timeout, signal, headers }) {
     const controller = new AbortController();
     const timer = timeout ? setTimeout(() => controller.abort(), timeout) : null;
     const onAbort = () => controller.abort();
@@ -110,7 +155,13 @@ export class Api {
       }
       return json;
     } catch (err) {
-      if (err?.name === "AbortError") throw new ApiError("Request timed out", 0);
+      if (err?.name === "AbortError") {
+        if (signal?.aborted) throw new ApiError("Cancelled", 0, null);
+        throw new ApiError("Request timed out", 0, null);
+      }
+      // fetch() rejects with a TypeError when the host is unreachable, DNS
+      // fails or the connection drops mid-request.
+      if (err?.name === "TypeError") throw new ApiError("Network unreachable", 0, err);
       throw err;
     } finally {
       if (timer) clearTimeout(timer);
@@ -154,9 +205,10 @@ export class Api {
   }
 
   listSessions({ search = "", limit = 40, cursor = null, order = "desc" } = {}) {
-    const q = new URLSearchParams({ limit: String(limit), order });
-    if (search) q.set("search", search);
+    const q = new URLSearchParams({ limit: String(limit) });
     if (cursor) q.set("cursor", cursor);
+    else q.set("order", order);
+    if (search) q.set("search", search);
     return this.request("GET", `/api/session?${q}`);
   }
 
@@ -179,9 +231,17 @@ export class Api {
     return this.request("DELETE", `/api/session/${id}`);
   }
 
+  /**
+   * One page of a session's messages.
+   *
+   * The server encodes direction *in* the cursor and rejects a cursor that is
+   * combined with `order` (400 InvalidCursorError), so a paged request sends the
+   * cursor alone. `cursor.next` walks towards older messages.
+   */
   messages(id, { limit = 60, order = "desc", cursor = null } = {}) {
-    const q = new URLSearchParams({ limit: String(limit), order });
+    const q = new URLSearchParams({ limit: String(limit) });
     if (cursor) q.set("cursor", cursor);
+    else q.set("order", order);
     return this.request("GET", `/api/session/${id}/message?${q}`);
   }
 
@@ -598,17 +658,63 @@ export class Api {
   }
 
   /**
-   * Live event stream. Reconnects automatically; returns a stop() function.
-   * onEvent({type, data, ...}), onStatus("online" | "offline" | "connecting")
+   * Live event stream with a finite retry budget.
+   *
+   * onEvent({type, data, ...}), onStatus(status, info) where status is
+   * "connecting" | "online" | "offline" | "failed". After `maxAttempts` the
+   * loop stops asking and reports "failed": the UI shows a Retry button instead
+   * of an invisible forever-loop. Coming back online resets the budget.
+   *
+   * Returns a stop() function with a retryNow() method.
    */
-  streamEvents(onEvent, onStatus) {
+  streamEvents(onEvent, onStatus, { maxAttempts = 8 } = {}) {
     let stopped = false;
     let controller = null;
     let attempt = 0;
+    let wake = null;
+    let lastError = null;
+    let running = false;
+
+    const wait = (ms) =>
+      new Promise((resolve) => {
+        const timer = setTimeout(done, ms);
+        function done() {
+          clearTimeout(timer);
+          if (wake === done) wake = null;
+          resolve();
+        }
+        wake = done;
+      });
+
+    const onNetwork = (event) => {
+      if (stopped) return;
+      if (event.type === "offline") {
+        lastError = new ApiError("The device is offline", 0, null);
+        try {
+          controller?.abort();
+        } catch {}
+        onStatus?.("offline", { attempt, maxAttempts, error: lastError });
+      } else {
+        attempt = 0;
+        wake?.();
+      }
+    };
+    try {
+      window.addEventListener("online", onNetwork);
+      window.addEventListener("offline", onNetwork);
+    } catch {}
 
     const loop = async () => {
-      while (!stopped) {
-        onStatus?.(attempt === 0 ? "connecting" : "connecting");
+      if (running) return;
+      running = true;
+      try {
+        while (!stopped) {
+          if (deviceOffline()) {
+            onStatus?.("offline", { attempt, maxAttempts, error: new ApiError("The device is offline", 0, null) });
+            await wait(1500);
+            continue;
+          }
+        onStatus?.(attempt === 0 ? "connecting" : "reconnecting", { attempt, maxAttempts });
         controller = new AbortController();
         try {
           const res = await this.fetch(this.base + "/api/event", {
@@ -620,7 +726,8 @@ export class Api {
           if (!res.ok || !res.body) throw new ApiError(`Event stream failed (${res.status})`, res.status);
 
           attempt = 0;
-          onStatus?.("online");
+          lastError = null;
+          onStatus?.("online", { attempt: 0, maxAttempts });
           const reader = res.body.getReader();
           const decoder = new TextDecoder();
           let buffer = "";
@@ -646,22 +753,47 @@ export class Api {
               }
             }
           }
-          if (!stopped) throw new ApiError("Event stream closed", 0);
-        } catch (err) {
-          if (stopped) return;
-          onStatus?.("offline");
-          attempt += 1;
-          await sleep(Math.min(12000, 600 * 2 ** Math.min(attempt, 4)));
+          if (!stopped) throw new ApiError("Event stream closed", 0, null);
+          } catch (err) {
+            if (stopped) return;
+            lastError = err;
+            attempt += 1;
+            if (attempt >= maxAttempts) {
+              onStatus?.("failed", { attempt, maxAttempts, error: err });
+              return;
+            }
+            onStatus?.("offline", { attempt, maxAttempts, error: err });
+            // A phone that is offline should not burn the whole budget in five
+            // seconds; wait for the online event when the system says so.
+            if (!deviceOffline()) await wait(jitter(Math.min(12000, 500 * 2 ** Math.min(attempt, 4))));
+            else await wait(1500);
+          }
         }
+      } finally {
+        running = false;
       }
     };
 
     loop();
-    return () => {
+    const stop = () => {
       stopped = true;
+      wake?.();
       try {
         controller?.abort();
       } catch {}
+      try {
+        window.removeEventListener("online", onNetwork);
+        window.removeEventListener("offline", onNetwork);
+      } catch {}
     };
+    stop.retryNow = () => {
+      if (stopped) return false;
+      attempt = 0;
+      if (running) wake?.();
+      // A loop that already reported "failed" has to be restarted.
+      else loop();
+      return true;
+    };
+    return stop;
   }
 }

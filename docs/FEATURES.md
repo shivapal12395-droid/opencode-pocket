@@ -42,8 +42,10 @@ below is judged by "can I do it from a phone with this UI".
 | Diffs in the timeline | Each edit shows as a diff inline as it lands | **part** - diff chip + changes sheet; no inline diff per edit |
 | Inline line comments | Desktop review panel: comment on any line, sent back to the agent | **no** |
 | Failures | Provider reason, next step, wait time, retries as they happen | **yes** - `session.retry.scheduled` and `session.step.failed` render live |
-| Interrupt | Stop a running turn | **yes** |
+| Interrupt | Stop a running turn | **yes** - one request, confirmed against the server when no `idle` arrives, and the composer returns to Send |
 | Steer while running | Enter steers the active session | **yes** (sending a prompt mid-run) |
+| Thinking vs Working | n/a - the TUI prints a spinner | **yes** - "Thinking" while the model works with no tool running, "Working" only while a tool is executing, one activity panel per request that becomes "Worked for Ns · N steps" when the turn closes |
+| Connection loss mid-turn | n/a (the TUI is the server) | **yes** - a banner names the retry count, the budget is finite (8 attempts), and after it is spent a manual Retry appears; the transcript, session and pending prompt survive. A prompt that was sent over a dropped socket is never re-sent automatically: it gets Check server / Send again / Discard |
 | Queue a prompt | TUI `Ctrl+X Enter`; server keeps an inbox per session | **yes** - Steer/Queue chip, queue strip, cancel and re-aim |
 | Agent asks a question | `question` tool → a form with choices; blocks until answered | **yes** - inline card: choices, free text, multiselect, booleans, conditional fields |
 | Attachments | File picker, paste, drag; text/PNG/JPEG/GIF/WebP/PDF up to 20 MiB | **part** - camera/gallery images only, resized client-side |
@@ -233,6 +235,10 @@ MCP write paths and the task checklist.
 | Sidebar navigation items | **yes** - every row opens the thing it names: Images (attached photos), Library (artifacts of the open conversation), Customize (8 config areas), Projects (server project list), Worktrees (per project, start a session in one), Scheduled tasks (per session), Plugins (the real `/api/plugin` list) |
 | Local history | **yes** - IndexedDB copy of sessions and messages, written on every load; offline fallback when the server is down; never auto-expired |
 | History reconciliation | **yes** - upstream sessions win; local-only copies are kept when a session disappears upstream |
+| Long conversations | **yes** - the transcript pages: the first page is the newest 80 messages and "Load earlier messages" walks back through the server's cursor without moving the reader's place (the cursor carries its own direction, so a paged request sends no `order`) |
+| Server data backup | **yes** - "Back up server data" writes a zip of the runtime's own store (sessions, settings, provider logins; not the project) to `Downloads/OpenCodePocket`, including the SQLite WAL, so the newest turns survive |
+| Restore after reinstall | **yes** - the app offers a restore when it finds an empty install, and "Choose a backup file…" picks one from Downloads; the runtime's own data is moved aside (never deleted), unsafe archive paths are refused, and the original session ids come back. The daemon is killed first: a restore that leaves it running keeps serving the old database |
+| Token-limit continuation | **yes** - a mid-turn `finish: "length"` is OpenCode continuing in smaller steps and is shown as such; a run that *ended* cut off gets a card with Continue (one user-triggered prompt, rendered as "Continued after the output limit" rather than a fake user bubble) and Retry. Nothing is re-sent automatically |
 | Explicit deletion | **yes** - server delete removes the local copy too; "Delete local copy" is separate and confirmed |
 | Export / import | **yes** - versioned JSON backup including messages |
 | Encrypted backup | **no** - the export is plain JSON, protected only by where the user stores it |

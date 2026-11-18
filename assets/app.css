@@ -504,7 +504,74 @@ svg { display: block; }
   font-size: 11px; color: var(--muted); font-weight: 500;
   margin-right: 2px; white-space: nowrap;
 }
-.chat-status .dot { width: 6px; height: 6px; border-radius: 99px; background: var(--warn); animation: pulse 1.1s infinite; }
+.chat-status .dot { width: 6px; height: 6px; border-radius: 99px; background: var(--accent); animation: pulse 1.1s infinite; }
+/* Thinking = the model is working with no tool running; Working = a tool is
+   actually executing. The header must not read the same for both. */
+.chat-status.thinking .dot { background: var(--muted-2); animation: pulse 1.6s ease-in-out infinite; }
+
+/* Chrome is not text. A long press on a button, chip or status line used to
+   start a selection and bring up Android's floating selection bar in the
+   middle of a chat; the transcript itself stays fully selectable. */
+button,
+.chat-status,
+.chat-sub,
+.chat-title-text,
+.session-tab,
+.activity-head,
+.inbox-chip,
+.net-banner,
+.todo-panel,
+.branch-chip,
+.si-icon,
+.caret {
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+/* ---- connection banner ---- */
+.net-banner {
+  display: flex; align-items: center; gap: 8px;
+  margin: 0 10px 6px; padding: 8px 10px;
+  background: var(--soft); border: 1px solid var(--line); border-radius: 10px;
+  font-size: 12px; color: var(--text);
+}
+.net-banner[hidden] { display: none; }
+.net-banner .net-dot {
+  width: 7px; height: 7px; flex: none; border-radius: 99px;
+  background: var(--danger); animation: pulse 1.2s infinite;
+}
+.net-banner .net-text { flex: 1; min-width: 0; }
+.net-retry {
+  flex: none; height: 28px; padding: 0 12px; border-radius: 8px;
+  background: var(--accent); color: var(--accent-ink);
+  font-size: 11.5px; font-weight: 600;
+}
+.net-retry[hidden] { display: none; }
+.net-retry:active { transform: scale(0.97); }
+
+/* ---- history pagination ---- */
+.load-older-row { display: flex; justify-content: center; padding: 2px 0 10px; }
+.load-older-row .btn {
+  height: 32px; padding: 0 14px; border-radius: 99px;
+  font-size: 12px; background: var(--elev); border-color: var(--line); color: var(--muted);
+}
+
+/* ---- partial-answer / unconfirmed-message cards ---- */
+.limit-card {
+  margin: 8px 0 4px; padding: 11px 12px;
+  background: var(--elev); border: 1px solid var(--line); border-radius: 12px;
+}
+.limit-head { display: flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 600; color: var(--warn); margin-bottom: 5px; }
+.limit-head svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.limit-card p { margin: 0 0 9px; font-size: 12px; line-height: 1.55; color: var(--muted); }
+.limit-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.btn-sm { height: 32px; padding: 0 13px; border-radius: 9px; font-size: 12px; }
+.limit-note { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--ok); }
+.limit-note svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2.2; }
+.pending-card { border-color: color-mix(in srgb, var(--warn) 30%, transparent); }
+.pending-card .limit-head { color: var(--warn); }
+.sys-limit .sys { color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); }
 
 .messages {
   flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch;

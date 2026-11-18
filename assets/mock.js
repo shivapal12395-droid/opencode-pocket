@@ -737,6 +737,34 @@ export class MockApi {
     // pending permission requests, keyed by request id
     this.permissionMap = new Map();
     this.permissionRuns = new Map();
+    this.dropped = false;
+    this.streamStatus = null;
+
+    // One deliberately long session, so history pagination has something real
+    // to page through (150 messages, more than the client's first page).
+    this.sessionList.push({
+      id: "ses_demo_long",
+      projectID: "prj_web",
+      agent: "build",
+      model: MODEL,
+      title: "Long task, 150 messages",
+      location: { directory: DIRS.web },
+      time: { created: now() - 6 * hour, updated: now() - 5 * hour, idle: now() - 5 * hour },
+    });
+    const long = [];
+    for (let i = 0; i < 180; i += 1) {
+      const at = now() - 6 * hour + i * 60_000;
+      long.push({ id: `msg_long_u${i}`, type: "user", text: `Step ${i + 1}: keep going.`, files: [], time: { created: at } });
+      long.push({
+        id: `msg_long_a${i}`,
+        type: "assistant",
+        model: MODEL,
+        agent: "build",
+        content: [{ type: "text", text: `Acknowledged step ${i + 1}. Continuing the long task.`, ordinal: 0, time: { completed: at + 900 } }],
+        time: { created: at + 400, completed: at + 900 },
+      });
+    }
+    this.messageMap["ses_demo_long"] = long;
   }
 
   beginRun(sid) {
@@ -764,6 +792,8 @@ export class MockApi {
   }
 
   emit(type, data) {
+    // A dropped socket delivers nothing: the client has to notice by itself.
+    if (this.dropped) return;
     for (const h of this.handlers) h({ id: "evt_" + this.seq, type, data, created: now() });
   }
 
@@ -837,8 +867,36 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
     return {};
   }
 
-  async messages(id) {
-    return { data: clone([...(this.messageMap[id] ?? [])].reverse()), cursor: { previous: null, next: null } };
+  async getSession(id) {
+    const s = this.sessionList.find((x) => x.id === id);
+    if (!s) return { data: null };
+    const busy = this.busySessions.has(id);
+    return {
+      data: clone({ ...s, time: { ...(s.time ?? {}), busy: busy ? now() : 0, idle: busy ? 0 : s.time?.idle ?? now() } }),
+    };
+  }
+
+  /**
+   * Paged like the real server: newest page first, and the `next` cursor walks
+   * towards older messages. The cursor is opaque to the client.
+   */
+  async messages(id, { limit = 60, cursor = null } = {}) {
+    const all = [...(this.messageMap[id] ?? [])]; // oldest -> newest
+    let end = all.length;
+    let start = Math.max(0, end - limit);
+    if (cursor) {
+      const [s, e] = String(cursor).split(":").map(Number);
+      if (Number.isFinite(s) && Number.isFinite(e)) {
+        start = s;
+        end = e;
+      }
+    }
+    const page = all.slice(start, end);
+    const nextStart = Math.max(0, start - limit);
+    return {
+      data: clone(page.reverse()),
+      cursor: { previous: null, next: start > 0 ? `${nextStart}:${start}` : null },
+    };
   }
 
   /* ---- forms: the question tool pauses the turn until it is answered ---- */
@@ -1390,11 +1448,31 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
 
   streamEvents(onEvent, onStatus) {
     this.handlers.push(onEvent);
+    this.streamStatus = onStatus;
     onStatus?.("online");
     setTimeout(() => onEvent({ id: "evt_connect", type: "server.connected", data: {}, created: now() }), 30);
-    return () => {
+    const stop = () => {
       this.handlers = this.handlers.filter((h) => h !== onEvent);
+      if (this.streamStatus === onStatus) this.streamStatus = null;
     };
+    // The client calls this from the banner's Retry button.
+    stop.retryNow = () => {
+      this.restoreStream();
+      return true;
+    };
+    return stop;
+  }
+
+  /** Test hooks: pretend the socket died, then came back. */
+  dropStream() {
+    this.streamStatus?.("offline", { attempt: 1, maxAttempts: 3 });
+    this.streamStatus?.("failed", { attempt: 3, maxAttempts: 3 });
+  }
+
+  restoreStream() {
+    this.dropped = false;
+    this.streamStatus?.("online", { attempt: 0, maxAttempts: 3 });
+    this.emit("server.connected", {});
   }
 
   prompt(id, { text, files, delivery = "steer" }) {
@@ -1416,6 +1494,22 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
       this.emit("session.inbox.enqueued", { sessionID: sid, inboxID, item });
       return { data: clone(item) };
     }
+
+    // The prompt never leaves the phone: the client must show the ambiguous
+    // "not confirmed" card instead of resending it.
+    if (/\b(unreachable|network drop|offline send)\b/i.test(text)) {
+      throw Object.assign(new Error("Network unreachable"), { name: "ApiError", status: 0, retryable: true });
+    }
+
+    // The prompt lands, then the socket dies mid-turn.
+    if (/\b(go offline|connection drop)\b/i.test(text)) return this.dropMidTurn(sid, text);
+
+    // An output token limit the way OpenCode handles it: the server continues
+    // in smaller steps, so the turn is not presented as an incomplete answer.
+    if (/\b(token limit|length stop)\b/i.test(text)) return this.limitTurn(sid, text);
+
+    // A run that ends while still cut off: the card offers Continue / Retry.
+    if (/\b(cut off|partial answer)\b/i.test(text)) return this.partialTurn(sid, text);
 
     if (/\b(fail|error|rate.?limit|429)\b/i.test(text)) return this.failTurn(sid, text);
 
@@ -1767,6 +1861,118 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
       }
       this.endRun(sid, runToken);
     }, 1900);
+    return { data: { id: userMsg.id, sessionID: sid, type: "user", payload: { text }, delivery: "steer", time: { created: now() } } };
+  }
+
+  /**
+   * A turn where the first step stops at the output token limit.
+   *
+   * This is the real OpenCode shape: the server records `finish: "length"`,
+   * injects a synthetic instruction, and keeps going in another step. Nothing
+   * about it is presented as a broken answer.
+   */
+  limitTurn(sid, text) {
+    const userMsg = { id: "msg_u_" + this.seq++, type: "user", text, files: [], time: { created: now() } };
+    const a1 = "msg_a_" + this.seq++;
+    const a2 = "msg_a_" + this.seq++;
+    const a1m = { id: a1, type: "assistant", model: MODEL, agent: "build", content: [{ type: "text", text: "", ordinal: 0 }], time: { created: now() } };
+    const a2m = { id: a2, type: "assistant", model: MODEL, agent: "build", content: [{ type: "text", text: "", ordinal: 0 }], time: { created: now() } };
+    const synthetic = {
+      id: "msg_s_" + this.seq++,
+      type: "synthetic",
+      text: "Your last response hit the output token limit (stop reason: length). Do not apologize, recap, or repeat yourself. Break the remaining work into smaller pieces.",
+      time: { created: now() },
+    };
+    this.messageMap[sid] = [...(this.messageMap[sid] ?? []), userMsg, a1m, synthetic, a2m];
+    const token = this.beginRun(sid);
+    const ev = (name, data) => this.emit(name, { sessionID: sid, agent: "build", model: MODEL, ...data });
+
+    this.later(() => ev("session.execution.started", {}), 150);
+    this.later(() => {
+      ev("session.step.started", { assistantMessageID: a1, started: now() });
+      ev("session.text.started", { assistantMessageID: a1, ordinal: 0 });
+      a1m.content[0].text = "Part one of the long task.";
+      a1m.finish = "length";
+      a1m.time.completed = now();
+      ev("session.text.ended", { assistantMessageID: a1, ordinal: 0, text: a1m.content[0].text });
+      ev("session.step.ended", { assistantMessageID: a1, finish: "length" });
+    }, 420);
+    this.later(() => {
+      ev("session.step.started", { assistantMessageID: a2, started: now() });
+      ev("session.text.started", { assistantMessageID: a2, ordinal: 0 });
+      a2m.content[0].text = "Part two, continuing in smaller steps.";
+      ev("session.text.delta", { assistantMessageID: a2, ordinal: 0, delta: a2m.content[0].text });
+    }, 780);
+    this.later(() => {
+      a2m.time.completed = now();
+      ev("session.text.ended", { assistantMessageID: a2, ordinal: 0, text: a2m.content[0].text });
+      ev("session.step.ended", { assistantMessageID: a2, finish: "stop" });
+      ev("session.execution.succeeded", {});
+      this.messageMap[sid].push({ id: "msg_i_" + this.seq++, type: "idle", outcome: "succeeded", time: { created: now() } });
+      ev("session.idle", {});
+      this.endRun(sid, token);
+    }, 1150);
+    return { data: { id: userMsg.id, sessionID: sid, type: "user", payload: { text }, delivery: "steer", time: { created: now() } } };
+  }
+
+  /** A turn that ended while still cut off, with nothing after it. */
+  partialTurn(sid, text) {
+    const userMsg = { id: "msg_u_" + this.seq++, type: "user", text, files: [], time: { created: now() } };
+    const a1 = "msg_a_" + this.seq++;
+    const a1m = {
+      id: a1,
+      type: "assistant",
+      model: MODEL,
+      agent: "build",
+      content: [{ type: "text", text: "This answer was cut off at the output token lim", ordinal: 0, time: { completed: now() } }],
+      finish: "length",
+      time: { created: now(), completed: now() },
+    };
+    this.messageMap[sid] = [...(this.messageMap[sid] ?? []), userMsg, a1m];
+    const token = this.beginRun(sid);
+    const ev = (name, data) => this.emit(name, { sessionID: sid, agent: "build", model: MODEL, ...data });
+    this.later(() => ev("session.execution.started", {}), 120);
+    this.later(() => {
+      ev("session.step.started", { assistantMessageID: a1, started: now() });
+      ev("session.step.ended", { assistantMessageID: a1, finish: "length" });
+      ev("session.execution.succeeded", {});
+      this.messageMap[sid].push({ id: "msg_i_" + this.seq++, type: "idle", outcome: "succeeded", time: { created: now() } });
+      ev("session.idle", {});
+      this.endRun(sid, token);
+    }, 420);
+    return { data: { id: userMsg.id, sessionID: sid, type: "user", payload: { text }, delivery: "steer", time: { created: now() } } };
+  }
+
+  /**
+   * The turn starts, the socket dies, and the turn finishes while the client is
+   * blind. The client has to reconcile from the server, not from its own state.
+   */
+  dropMidTurn(sid, text) {
+    const userMsg = { id: "msg_u_" + this.seq++, type: "user", text, files: [], time: { created: now() } };
+    const a1 = "msg_a_" + this.seq++;
+    const a1m = { id: a1, type: "assistant", model: MODEL, agent: "build", content: [{ type: "text", text: "", ordinal: 0 }], time: { created: now() } };
+    this.messageMap[sid] = [...(this.messageMap[sid] ?? []), userMsg, a1m];
+    const token = this.beginRun(sid);
+    const ev = (name, data) => this.emit(name, { sessionID: sid, agent: "build", model: MODEL, ...data });
+    this.later(() => ev("session.execution.started", {}), 150);
+    this.later(() => {
+      ev("session.step.started", { assistantMessageID: a1, started: now() });
+      ev("session.text.started", { assistantMessageID: a1, ordinal: 0 });
+      a1m.content[0].text = "Working on it...";
+      ev("session.text.delta", { assistantMessageID: a1, ordinal: 0, delta: "Working on it..." });
+    }, 320);
+    // The socket drops: no further events reach the client.
+    this.later(() => {
+      this.dropped = true;
+      this.dropStream();
+    }, 620);
+    // The server finishes the turn anyway, unseen.
+    this.later(() => {
+      a1m.content[0].text = "Finished while the socket was down.";
+      a1m.time.completed = now();
+      this.messageMap[sid].push({ id: "msg_i_" + this.seq++, type: "idle", outcome: "succeeded", time: { created: now() } });
+      this.endRun(sid, token);
+    }, 2400);
     return { data: { id: userMsg.id, sessionID: sid, type: "user", payload: { text }, delivery: "steer", time: { created: now() } } };
   }
 

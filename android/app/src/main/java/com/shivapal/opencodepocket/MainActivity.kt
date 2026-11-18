@@ -296,7 +296,10 @@ class MainActivity : AppCompatActivity() {
             ): Boolean {
                 filePathCallback?.onReceiveValue(null)
                 filePathCallback = callback
-                filePicker.launch("image/*")
+                // Honour what the page asked for. It used to always be image/*,
+                // which silently hid every .json/.zip a page wanted to import.
+                val mime = params?.acceptTypes?.firstOrNull { it.isNotBlank() && it != "*/*" } ?: "*/*"
+                filePicker.launch(mime)
                 return true
             }
 
