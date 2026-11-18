@@ -194,17 +194,32 @@ const API_URL = () => pathToFileURL(path.join(__dirname, "..", "assets", "api.js
     await openSession("ses_demo1");
     await send("multi-step change please");
     const statuses = new Set();
+    const mismatches = [];
     for (let i = 0; i < 40; i++) {
       await sleep(200);
       const s = await page.evaluate(() => {
         const el = document.querySelector("#chat-status");
-        return { hidden: el.hidden, text: el.hidden ? "" : el.querySelector("span").textContent, panels: document.querySelectorAll("#messages .activity").length };
+        const panels = [...document.querySelectorAll("#messages .activity-head .act-title")]
+          .map((n) => n.textContent.trim())
+          .filter((t) => /^(Thinking|Working)/.test(t));
+        return {
+          hidden: el.hidden,
+          text: el.hidden ? "" : el.querySelector("span").textContent,
+          panel: panels[panels.length - 1] ?? "",
+          panels: document.querySelectorAll("#messages .activity").length,
+        };
       });
-      if (!s.hidden) statuses.add(s.text);
+      if (!s.hidden) {
+        statuses.add(s.text);
+        // The panel and the header describe the same phase, so they can never
+        // disagree: "Thinking" with a "Working…" panel was the old bug.
+        if (s.panel && !s.panel.startsWith(s.text)) mismatches.push(`${s.text} vs "${s.panel}"`);
+      }
       if (await page.evaluate(() => document.querySelector("#btn-send").dataset.mode === "send")) break;
     }
     assert(statuses.has("Thinking"), "never showed Thinking: " + JSON.stringify([...statuses]));
     assert(statuses.has("Working"), "never showed Working: " + JSON.stringify([...statuses]));
+    assert(mismatches.length === 0, "header and panel disagreed: " + mismatches.slice(0, 3).join(" | "));
     const panels = await page.evaluate(() => document.querySelectorAll("#messages .activity").length);
     assert(panels >= 1, "no activity panel");
     return `states ${[...statuses].join(" -> ")}, ${panels} panel(s) after`;
@@ -285,6 +300,70 @@ const API_URL = () => pathToFileURL(path.join(__dirname, "..", "assets", "api.js
     assert(!counts.error, counts.error);
     assert(counts.sessions === 0 && counts.messages === 0, "the real cache holds demo data: " + JSON.stringify(counts));
     return `${counts.sessions} sessions / ${counts.messages} messages in the real cache after opening demo chats`;
+  });
+
+  /* ---- diagrams (the renderer adopted from Aurora) -------------------- */
+
+  await test("A finished diagram draws while a later turn streams", async () => {
+    await openSession("ses_demo10");
+    await send("rich markdown answer please");
+    // While the new turn is writing, an older answer's diagram must not be
+    // stuck as source just because the page is busy.
+    await sleep(1200);
+    await page.$eval("pre.mermaid", (n) => n.scrollIntoView({ block: "center" }));
+    let busy = "";
+    let drawn = false;
+    for (let i = 0; i < 40; i++) {
+      await sleep(500);
+      busy = await page.evaluate(() => document.querySelector("#btn-send").dataset.mode);
+      drawn = await page.evaluate(() => document.querySelectorAll("pre.mermaid.drawn svg").length > 0);
+      if (drawn) break;
+    }
+    const during = { busy, drawn };
+    assert(drawn, "the diagram never drew");
+    assert(busy === "stop", "the turn had already finished; the busy path was not exercised (mode=" + busy + ")");
+    await waitIdle();
+    return `drawn while mode=stop (${during.busy}), no source left behind`;
+  });
+
+  await test("A diagram that uses the reserved word 'end' still draws", async () => {
+    await openSession("ses_demo11");
+    await page.$eval("pre.mermaid", (n) => n.scrollIntoView({ block: "center" }));
+    let state2 = null;
+    for (let i = 0; i < 40; i++) {
+      await sleep(500);
+      state2 = await page.evaluate(() => ({
+        drawn: document.querySelectorAll("pre.mermaid.drawn svg").length,
+        failed: document.querySelectorAll("pre.mermaid.failed").length,
+        note: document.querySelector("#messages .mermaid-error")?.textContent ?? "",
+        nodes: document.querySelectorAll("pre.mermaid.drawn svg g.node").length,
+      }));
+      if (state2.drawn || state2.failed) break;
+    }
+    assert(state2.drawn >= 1, "the diagram did not draw: " + JSON.stringify(state2));
+    assert(state2.failed === 0, "still marked failed: " + state2.note);
+    assert(state2.nodes >= 4, "drawn but empty: nodes=" + state2.nodes);
+    return `drawn with ${state2.nodes} nodes, 0 parse failures (classDef end renamed)`;
+  });
+
+  await test("A flowchart with diagram notes draws, and says what it skipped", async () => {
+    await openSession("ses_demo12");
+    await page.$eval("pre.mermaid", (n) => n.scrollIntoView({ block: "center" }));
+    let st = null;
+    for (let i = 0; i < 40; i++) {
+      await sleep(500);
+      st = await page.evaluate(() => ({
+        drawn: document.querySelectorAll("pre.mermaid.drawn svg").length,
+        failed: document.querySelectorAll("pre.mermaid.failed").length,
+        note: document.querySelector("#messages .mermaid-error")?.textContent ?? "",
+        nodes: document.querySelectorAll("pre.mermaid.drawn svg g.node").length,
+      }));
+      if (st.drawn || st.failed) break;
+    }
+    assert(st.drawn === 1 && st.failed === 0, "diagram did not draw: " + JSON.stringify(st));
+    assert(/note/i.test(st.note) && /source/i.test(st.note), "no honest note about the skipped notes: " + st.note);
+    assert(st.nodes >= 5, "drawn but incomplete: nodes=" + st.nodes);
+    return `${st.nodes} nodes drawn, note kept in the source ("${st.note.slice(0, 52)}…")`;
   });
 
   /* ---- 6. transport -------------------------------------------------- */

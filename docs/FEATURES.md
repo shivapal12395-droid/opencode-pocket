@@ -54,7 +54,7 @@ below is judged by "can I do it from a phone with this UI".
 | Shell mode | `!` at the start of a prompt runs it in the session | **part** - via the "Run a command" sheet, not `!` in the composer |
 | Usage per answer | Tokens, cache, cost under the turn | **yes** |
 | Markdown | Code, tables, lists, copy buttons | **yes** |
-| Mermaid | Rendered, maximisable for pan/zoom | **no** |
+| Mermaid | Rendered, maximisable for pan/zoom | **yes** - drawn lazily when it scrolls into view, full-screen viewer with the source, and the two mistakes models make most often are repaired instead of failing: reserved class names (`:::end`) are renamed, and flowchart `note` lines (sequence syntax) are set aside with a line that says so |
 | Todo list | `todowrite` tool renders as a live checklist | **yes** - progress panel at the top of the chat with a checkmark per step |
 | Subagent runs | Child session, report arrives back in the parent | **part** - child sessions appear in the list, no linkage in the transcript |
 

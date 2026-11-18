@@ -183,6 +183,24 @@ WebView of the installed APK and checks each adopted piece on the phone:
 | Export HTML | `Session-refresh-…html` in `Downloads` (12 KB): doctype, MathML, callout CSS, `@media print`, no `<script>`, Hindi intact |
 | Print / Save as PDF | native bridge → `com.android.printspooler` print UI on top |
 
+**Diagram fixes that came out of looking at the device screen.** The transcript was
+showing raw Mermaid for three reasons, all fixed:
+
+1. *Only the live message may stay as source.* `decorateTranscript` used to skip **every**
+   diagram while any turn was running, so an older answer's diagram stayed as a code block
+   whenever a later turn was writing. Now only the message being written is deferred.
+2. *Reserved class names.* Models constantly write `:::end` / `classDef end …`; `end` is a
+   Mermaid keyword, so the diagram failed to parse. The client renames reserved class
+   identifiers consistently (`end` → `endNode`) before drawing.
+3. *Flowchart notes.* `note right of B:` is sequence-diagram syntax; inside a flowchart it
+   is a parse error, and it was the next failure on the same conversation. The flow around
+   it is valid, so the notes are set aside, the diagram draws, and a quiet line says
+   "Drew the flow without N notes … (they are still in the source)".
+
+Result on the user's own conversation: **9 of 9 diagrams drawn, 0 failed** (before: 2
+drawn, 2 failed, the rest stuck as source). `suite-12` covers all three (a finished diagram
+drawing while a later turn streams, the reserved word, the notes line).
+
 **A real defect this uncovered.** Demo transcripts live on the same origin as the app,
 and they were written to the *same* IndexedDB and the *same* `ocp.*` localStorage keys.
 After a demo run, the real app found `ses_demo*` in the recovery cache and in the saved

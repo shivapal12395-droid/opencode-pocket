@@ -1479,8 +1479,12 @@ function renderActivity(items, m, streaming, keyOverride = null, durationMs = 0)
   const steps = tools.length + (reasoning.length ? 1 : 0);
   const dur = durationMs || activityDuration(items);
   const count = `${steps} ${steps === 1 ? "step" : "steps"}`;
+  // The live caption follows the same phase as the header: a tool has to be
+  // actually running for this to say "Working". Otherwise the panel claimed
+  // "Working" while the header said "Thinking".
+  const working = live && (state.phase === "working" || tools.some((i) => toolStatus(i.part) === "running"));
   const title = live
-    ? `Working… · ${count}`
+    ? `${working ? "Working" : "Thinking"}… · ${count}`
     : dur
       ? `Worked for ${fmtDuration(dur)} · ${count}`
       : `Worked · ${count}`;
@@ -1920,7 +1924,7 @@ function resetMessageRender() {
  *     a parse error, not a preview.
  */
 
-const diagramEngine = { module: null, observer: null, cache: new Map() };
+const diagramEngine = { module: null, observer: null, cache: new Map(), notes: new Map() };
 const DIAGRAM_CACHE_MAX = 40;
 const DIAGRAM_MAX_SOURCE = 30000;
 
@@ -1939,6 +1943,68 @@ function diagramObserver() {
   return diagramEngine.observer;
 }
 
+/**
+ * Mermaid reserves `end` (and a few other words) as keywords. Models very often
+ * write `:::end` / `classDef end fill:...`, which is perfectly sensible-looking
+ * Mermaid and always fails to parse. Renaming the class keeps the diagram the
+ * author clearly meant instead of showing a parse error.
+ */
+const MERMAID_RESERVED = new Set([
+  "end", "graph", "flowchart", "subgraph", "class", "classdef",
+  "click", "style", "linkstyle", "direction", "default", "call", "href",
+]);
+
+function prepareDiagram(source) {
+  const raw = String(source ?? "");
+  const isFlowchart = /^\s*(flowchart|graph)\b/i.test(raw);
+  let droppedNotes = 0;
+  let text = raw;
+  // `note right of B:` is sequence/class syntax. In a flowchart it is a parse
+  // error, and models put it there constantly. The flow itself is still valid,
+  // so the notes are set aside (the source keeps them) instead of losing the
+  // whole diagram.
+  if (isFlowchart) {
+    text = raw
+      .split(/\r?\n/)
+      .filter((line) => {
+        if (/^\s*note(s)?\s+(right|left|over)\b/i.test(line)) {
+          droppedNotes += 1;
+          return false;
+        }
+        return true;
+      })
+      .join("\n");
+  }
+  return { text: normalizeDiagramSource(text), droppedNotes };
+}
+
+function diagramNoteText(count) {
+  return count === 1
+    ? "Drew the flow without one note: Mermaid notes only exist in sequence diagrams (the note is still in the source)."
+    : `Drew the flow without ${count} notes: Mermaid notes only exist in sequence diagrams (they are still in the source).`;
+}
+
+function normalizeDiagramSource(source) {
+  let text = String(source ?? "");
+  const renamed = new Map();
+  const rename = (name) => {
+    if (!MERMAID_RESERVED.has(String(name).toLowerCase())) return name;
+    if (!renamed.has(name)) renamed.set(name, `${name}Node`);
+    return renamed.get(name);
+  };
+  // node ::: class
+  text = text.replace(/:::([A-Za-z_][\w-]*)/g, (_m, n) => `:::${rename(n)}`);
+  // classDef class ...
+  text = text.replace(/(^|\n)([ \t]*classDef[ \t]+)([A-Za-z_][\w-]*)/g, (_m, pre, kw, n) => pre + kw + rename(n));
+  // class A,B class
+  text = text.replace(/(^|\n)([ \t]*class[ \t]+)([^\n;]+)/g, (_m, pre, kw, body) => {
+    const parts = body.trim().split(/\s+/);
+    if (parts.length >= 2) parts[parts.length - 1] = rename(parts[parts.length - 1]);
+    return pre + kw + parts.join(" ");
+  });
+  return text;
+}
+
 async function drawDiagrams(nodes) {
   const list = nodes.filter((n) => n.isConnected && !n.classList.contains("drawn") && !n.classList.contains("failed"));
   if (!list.length) return;
@@ -1953,9 +2019,11 @@ async function drawDiagrams(nodes) {
   for (const node of list) {
     if (!node.isConnected || node.classList.contains("drawn")) continue;
     const source = node.textContent ?? "";
+    const prepared = prepareDiagram(source);
     try {
-      const svg = await mod.drawOne(node, source);
-      rememberDiagram(source, svg);
+      const svg = await mod.drawOne(node, prepared.text);
+      rememberDiagram(source, svg, prepared.droppedNotes);
+      if (prepared.droppedNotes) panelNote(node, diagramNoteText(prepared.droppedNotes));
     } catch (err) {
       markDiagramFailed(node, err);
     }
@@ -1976,9 +2044,11 @@ async function paintArtifactDiagrams() {
   for (const node of nodes) {
     if (!node.isConnected) continue;
     const source = node.textContent ?? "";
+    const prepared = prepareDiagram(source);
     try {
-      const svg = await mod.drawOne(node, source);
-      rememberDiagram(source, svg);
+      const svg = await mod.drawOne(node, prepared.text);
+      rememberDiagram(source, svg, prepared.droppedNotes);
+      if (prepared.droppedNotes) panelNote(node, diagramNoteText(prepared.droppedNotes));
     } catch (err) {
       markDiagramFailed(node, err);
     }
@@ -1999,10 +2069,16 @@ function panelNote(node, text) {
   node.after(note);
 }
 
-function rememberDiagram(source, svg) {
+function rememberDiagram(source, svg, droppedNotes = 0) {
   const key = themeKey() + "\u0000" + source;
   diagramEngine.cache.set(key, svg);
-  if (diagramEngine.cache.size > DIAGRAM_CACHE_MAX) diagramEngine.cache.delete(diagramEngine.cache.keys().next().value);
+  // The "drawn without notes" line has to come back with a cached replay too,
+  // otherwise it would disappear on the next transcript rebuild.
+  if (droppedNotes) diagramEngine.notes.set(key, droppedNotes);
+  else diagramEngine.notes.delete(key);
+  if (diagramEngine.cache.size > DIAGRAM_CACHE_MAX) {
+    diagramEngine.cache.delete(diagramEngine.cache.keys().next().value);
+  }
 }
 
 /**
@@ -2021,6 +2097,8 @@ function decorateTranscript() {
       node.innerHTML = svg;
       node.__mermaidSource = source; // the viewer's Source toggle needs it
       node.classList.add("drawn");
+      const dropped = diagramEngine.notes.get(key0 + "\u0000" + source) ?? 0;
+      if (dropped) panelNote(node, diagramNoteText(dropped));
       continue;
     }
     if (source.trim().length > DIAGRAM_MAX_SOURCE) {
@@ -2029,9 +2107,18 @@ function decorateTranscript() {
     }
     pending.push(node);
   }
-  if (!pending.length || state.busy) return; // mid-turn source is not a diagram yet
+  if (!pending.length) return;
+  // Only the message that is still being written is left alone: half a diagram
+  // is a parse error. Everything already finished is drawn, even while a later
+  // turn streams — the page being busy is not a reason for an older answer to
+  // stay as source.
+  const liveId = state.busy ? state.lastAssistantId : null;
+  const ready = liveId
+    ? pending.filter((n) => (n.closest("[data-msg]")?.dataset.msg ?? "") !== liveId)
+    : pending;
+  if (!ready.length) return;
   const io = diagramObserver();
-  for (const node of pending) io.observe(node);
+  for (const node of ready) io.observe(node);
 }
 
 /* A theme or accent flip changes the diagram palette, and Mermaid bakes colours
@@ -2039,6 +2126,7 @@ function decorateTranscript() {
  * instead of rebuilding the whole transcript. */
 function repaintDiagrams() {
   diagramEngine.cache.clear();
+  diagramEngine.notes.clear();
   for (const node of $$("pre.mermaid.drawn, pre.mermaid.failed", el.messages)) {
     const source = node.__mermaidSource;
     if (!source) continue;

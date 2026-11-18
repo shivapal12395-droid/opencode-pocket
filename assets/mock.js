@@ -515,6 +515,106 @@ MESSAGES.ses_demo10 = [
   { id: "msg_d10i", type: "idle", outcome: "succeeded", time: { created: now() - 49 * min + 1_000 } },
 ];
 
+// A diagram that uses `end` as a class name. Mermaid reserves that word, so a
+// model-written flowchart like this fails to parse unless the client renames the
+// class before drawing it. Kept as its own session so suite 11's counts stay put.
+const RESERVED_DIAGRAM = `flowchart TD
+  A([🚀 Start]):::start --> B[📥 Input]:::input
+  B --> C{✅ Valid?}:::check
+  C -- Yes --> D[⚙️ Process]:::process
+  C -- No --> E([❌ Error]):::error
+  D --> F([🎉 End]):::end
+  E --> F
+
+  classDef start fill:#00C853,stroke:#1B5E20,color:#fff,stroke-width:3px
+  classDef input fill:#29B6F6,stroke:#01579B,color:#fff,stroke-width:2px
+  classDef check fill:#FFB300,stroke:#E65100,color:#000,stroke-width:2px
+  classDef process fill:#7E57C2,stroke:#4527A0,color:#fff,stroke-width:2px
+  classDef error fill:#EF5350,stroke:#B71C1C,color:#fff,stroke-width:2px
+  classDef end fill:#26C6DA,stroke:#00695C,color:#fff,stroke-width:3px`;
+
+SESSIONS.push({
+  id: "ses_demo11",
+  projectID: "prj_api",
+  agent: "build",
+  model: MODEL,
+  title: "A diagram that uses a reserved word",
+  location: { directory: DIRS.api },
+  time: { created: now() - 35 * min, updated: now() - 34 * min, idle: now() - 34 * min },
+});
+
+MESSAGES.ses_demo11 = [
+  {
+    id: "msg_d11u",
+    type: "user",
+    text: "Error handling ka flow diagram banao.",
+    files: [],
+    time: { created: now() - 35 * min },
+  },
+  {
+    id: "msg_d11a",
+    type: "assistant",
+    model: MODEL,
+    agent: "build",
+    time: { created: now() - 35 * min, completed: now() - 34 * min },
+    tokens: { input: 9_800, output: 260, cache: { read: 6_100, write: 0 } },
+    cost: 0.0011,
+    content: [{ type: "text", text: "Yeh flow hai:\n\n```mermaid\n" + RESERVED_DIAGRAM + "\n```\n\nHar branch ek hi end node pe milti hai.", ordinal: 0 }],
+  },
+  { id: "msg_d11i", type: "idle", outcome: "succeeded", time: { created: now() - 34 * min + 1_000 } },
+];
+
+// Flowchart notes are sequence-diagram syntax. The flow around them is valid,
+// so the client sets the notes aside and draws the diagram.
+const NOTE_DIAGRAM = `flowchart TD
+  A[Input lo]:::info --> B[Validate karo]:::process
+  B --> C{Valid?}:::decision
+  C -- Haan --> D[Save karo]:::success
+  C -- Nahi --> E[Error dikhao]:::error
+  D --> F([Done]):::done
+  E --> F
+
+  note right of B: Yahan pe data format aur required fields check hote hain.
+  note over D,F: Success flow complete hone ke baad user ko confirm karo.
+
+  classDef info fill:#03A9F4,stroke:#0277BD,color:#fff,stroke-width:2px
+  classDef process fill:#3F51B5,stroke:#283593,color:#fff,stroke-width:2px
+  classDef decision fill:#FF9800,stroke:#EF6C00,color:#fff,stroke-width:2px
+  classDef success fill:#4CAF50,stroke:#2E7D32,color:#fff,stroke-width:2px
+  classDef error fill:#F44336,stroke:#C62828,color:#fff,stroke-width:2px
+  classDef done fill:#00BCD4,stroke:#006064,color:#fff,stroke-width:2px`;
+
+SESSIONS.push({
+  id: "ses_demo12",
+  projectID: "prj_api",
+  agent: "build",
+  model: MODEL,
+  title: "Flowchart with diagram notes",
+  location: { directory: DIRS.api },
+  time: { created: now() - 30 * min, updated: now() - 29 * min, idle: now() - 29 * min },
+});
+
+MESSAGES.ses_demo12 = [
+  {
+    id: "msg_d12u",
+    type: "user",
+    text: "Error handling flow, notes ke saath.",
+    files: [],
+    time: { created: now() - 30 * min },
+  },
+  {
+    id: "msg_d12a",
+    type: "assistant",
+    model: MODEL,
+    agent: "build",
+    time: { created: now() - 30 * min, completed: now() - 29 * min },
+    tokens: { input: 9_100, output: 310, cache: { read: 5_800, write: 0 } },
+    cost: 0.001,
+    content: [{ type: "text", text: "Yeh flow hai, notes ke saath:\n\n```mermaid\n" + NOTE_DIAGRAM + "\n```\n", ordinal: 0 }],
+  },
+  { id: "msg_d12i", type: "idle", outcome: "succeeded", time: { created: now() - 29 * min + 1_000 } },
+];
+
 MESSAGES.ses_demo7 = [
   {
     id: "msg_d7u",
