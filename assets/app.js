@@ -1043,6 +1043,12 @@ async function openSession(sessionOrId) {
       : sessionOrId;
   if (!session) return;
 
+  // Keep what was typed in the previous conversation, and hand this one its own
+  // draft back. Switching sessions used to carry one draft into another chat,
+  // and a process death lost it entirely.
+  const leaving = state.session?.id;
+  if (leaving && leaving !== session.id) saveDraft(true);
+
   state.session = session;
   store.set("lastSessionID", session.id);
   store.set("lastWorkspace", session.location?.directory ?? state.lastWorkspace);
@@ -1061,7 +1067,7 @@ async function openSession(sessionOrId) {
     history.pushState({ chat: true }, "");
   }
   el.messages.innerHTML = `<div class="empty"><span class="spinner" style="margin:0 auto 12px"></span>Loading conversation…</div>`;
-  el.input.value = "";
+  restoreDraft(session.id);
   autoGrow();
   updateSendButton();
 
@@ -1924,7 +1930,7 @@ function resetMessageRender() {
  *     a parse error, not a preview.
  */
 
-const diagramEngine = { module: null, observer: null, cache: new Map(), notes: new Map() };
+const diagramEngine = { module: null, observer: null, cache: new Map(), notes: new Map(), observed: new Set() };
 const DIAGRAM_CACHE_MAX = 40;
 const DIAGRAM_MAX_SOURCE = 30000;
 
@@ -1935,12 +1941,34 @@ function diagramObserver() {
   diagramEngine.observer = new IntersectionObserver(
     (entries) => {
       const batch = entries.filter((x) => x.isIntersecting).map((x) => x.target);
-      for (const node of batch) diagramEngine.observer.unobserve(node);
+      for (const node of batch) {
+        diagramEngine.observer.unobserve(node);
+        diagramEngine.observed.delete(node);
+      }
       if (batch.length) drawDiagrams(batch);
     },
     { root: el.messages, rootMargin: "600px 0px" }
   );
   return diagramEngine.observer;
+}
+
+/**
+ * Watch a diagram, and let go of the ones a rebuild has already thrown away.
+ *
+ * The transcript is replaced wholesale on every event, so a diagram that has not
+ * scrolled into view yet gets a new node each time. Without this the observer
+ * would keep every discarded node alive for the life of the session.
+ */
+function observeDiagram(node) {
+  const io = diagramObserver();
+  for (const old of diagramEngine.observed) {
+    if (!old.isConnected) {
+      io.unobserve(old);
+      diagramEngine.observed.delete(old);
+    }
+  }
+  io.observe(node);
+  diagramEngine.observed.add(node);
 }
 
 /**
@@ -2079,6 +2107,11 @@ function rememberDiagram(source, svg, droppedNotes = 0) {
   if (diagramEngine.cache.size > DIAGRAM_CACHE_MAX) {
     diagramEngine.cache.delete(diagramEngine.cache.keys().next().value);
   }
+  // Same ceiling for the note bookkeeping, so a long session cannot grow it
+  // without bound either.
+  while (diagramEngine.notes.size > DIAGRAM_CACHE_MAX) {
+    diagramEngine.notes.delete(diagramEngine.notes.keys().next().value);
+  }
 }
 
 /**
@@ -2117,8 +2150,7 @@ function decorateTranscript() {
     ? pending.filter((n) => (n.closest("[data-msg]")?.dataset.msg ?? "") !== liveId)
     : pending;
   if (!ready.length) return;
-  const io = diagramObserver();
-  for (const node of ready) io.observe(node);
+  for (const node of ready) observeDiagram(node);
 }
 
 /* A theme or accent flip changes the diagram palette, and Mermaid bakes colours
@@ -2591,9 +2623,29 @@ const STREAM_FRAGMENTS = new Set([
   "session.tool.input.delta",
 ]);
 
+/**
+ * Event ids already applied.
+ *
+ * Every event the server sends carries an `id` (`evt_...`). A reconnecting
+ * stream, a double-subscribed reader or a flaky proxy can deliver the same
+ * frame twice, and text deltas are appended — one duplicate doubles a word.
+ * Ids are unique per event, so a bounded set is enough to make the transcript
+ * idempotent without guessing at content.
+ */
+const appliedEvents = new Set();
+const APPLIED_EVENTS_MAX = 800;
+
 function handleEvent(event) {
   const type = event.type;
   const data = event.data ?? {};
+  const eventId = event.id;
+  if (eventId) {
+    if (appliedEvents.has(eventId)) return;
+    appliedEvents.add(eventId);
+    if (appliedEvents.size > APPLIED_EVENTS_MAX) {
+      appliedEvents.delete(appliedEvents.values().next().value);
+    }
+  }
 
   // Forms and the inbox come before the open-session filter: a question can
   // arrive for a session that is not on screen and still must be remembered.
@@ -2948,6 +3000,40 @@ function maybeOfferMentions() {
   openMentionSheet(match[1]);
 }
 
+/* ---------------------------------------------------------------- drafts
+ * The composer belongs to a conversation. A draft is written per session (so
+ * switching does not leak one chat's text into another) and lives in
+ * localStorage (so a process death does not throw away what was typed).
+ */
+let draftTimer = 0;
+const draftKey = (sid) => `draft:${sid}`;
+
+function saveDraft(immediate = false) {
+  const sid = state.session?.id;
+  if (!sid) return;
+  const text = el.input.value;
+  clearTimeout(draftTimer);
+  const write = () => {
+    try {
+      if (text.trim()) store.set(draftKey(sid), text);
+      else store.del(draftKey(sid));
+    } catch {}
+  };
+  if (immediate) write();
+  else draftTimer = setTimeout(write, 500);
+}
+
+function restoreDraft(sid) {
+  const text = store.get(draftKey(sid), "") ?? "";
+  el.input.value = typeof text === "string" ? text : "";
+}
+
+function clearDraft(sid) {
+  if (!sid) return;
+  clearTimeout(draftTimer);
+  store.del(draftKey(sid));
+}
+
 function autoGrow() {
   el.input.style.height = "auto";
   el.input.style.height = Math.min(el.input.scrollHeight, window.innerHeight * 0.34) + "px";
@@ -3043,7 +3129,9 @@ async function sendMessage() {
   // the run (steer) or wait for it (queue). The composer exposes the choice.
   const delivery = state.busy ? state.delivery : "steer";
   const files = attachmentsPayload();
+  const sendingTo = state.session.id;
   el.input.value = "";
+  clearDraft(sendingTo);
   autoGrow();
   state.attachments = [];
   renderAttachments();
@@ -7376,7 +7464,14 @@ function bindEvents() {
     updateSendButton();
     maybeShowCommandHints();
     maybeOfferMentions();
+    saveDraft();
   });
+  // A backgrounded or closing app must have the draft on disk already: the
+  // WebView can be killed without another event ever arriving.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") saveDraft(true);
+  });
+  window.addEventListener("pagehide", () => saveDraft(true));
   el.input.addEventListener("keydown", (e) => {
     if (e.key !== "Enter" || e.shiftKey || e.isComposing) return;
     const finePointer = matchMedia("(pointer: fine)").matches;
@@ -7569,6 +7664,19 @@ async function boot() {
     // and its own localStorage prefix (never the real last-session or tabs).
     History.useDemoNamespace();
     store.useDemoNamespace();
+    // Test hook, demo only: the suites need to compare what the UI shows against
+    // what the server actually stored. It is never installed in the real app.
+    window.__pocketTest = {
+      get state() {
+        return state;
+      },
+      get api() {
+        return state.api;
+      },
+      get diagrams() {
+        return { observed: diagramEngine.observed.size, cache: diagramEngine.cache.size };
+      },
+    };
     state.api = new MockApi();
     state.base = "demo://pocket";
     state.info = await state.api.info();

@@ -564,6 +564,56 @@ MESSAGES.ses_demo11 = [
   { id: "msg_d11i", type: "idle", outcome: "succeeded", time: { created: now() - 34 * min + 1_000 } },
 ];
 
+// The document the chaos turns stream. It is long enough to be chunked in every
+// way the tests use, and it contains one of everything the transcript renders.
+const CHAOS_DOC = `## Stress document
+
+A paragraph that is deliberately long enough to arrive over many frames, with **bold**, _italic_, \`inline code\`, a [link](https://example.com/a/very/long/path/that/should/not/overflow/the/bubble?with=query&and=more), and a very long unbroken token: ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.
+
+| Phase | What happens | Notes |
+| --- | --- | --- |
+| parse | markdown-it reads the block | fast |
+| render | KaTeX / highlight.js run | cached |
+| stream | frames arrive | ordered |
+
+- nested list
+  - second level
+    - third level with \`code\`
+- another item
+
+\`\`\`ts
+export async function stream(id: string) {
+  const frames = await read(id);
+  for (const frame of frames) apply(frame);
+  return frames.length;
+}
+\`\`\`
+
+Math: $E = mc^2$ inline and:
+
+$$
+\\int_0^1 x^2\\,dx = \\frac{1}{3}
+$$
+
+\`\`\`mermaid
+flowchart LR
+  A[Start] --> B{Check}
+  B -- yes --> C[Ship]
+  B -- no --> D[Fix]
+\`\`\`
+
+The end of the document.`;
+
+const CHAOS_UNICODE = `## यूनिकोड परीक्षण
+
+हिंदी में लंबा वाक्य: नमस्ते, यह एक बहुत लंबा संदेश है जिसमें देवनागरी लिपि, विराम चिह्न और संख्याएँ १२३ हैं।
+
+Emoji: 🚀 ✅ 🎉 👨‍👩‍👧‍👦 🧑🏽‍💻 and combining marks: café, naïve, Zürich, İstanbul.
+
+Mixed: \`const नाम = "पॉकेट";\` और English in the same breath.
+
+Zero width: a\u200Bb and RTL: שלום עולם.`;
+
 // Flowchart notes are sequence-diagram syntax. The flow around them is valid,
 // so the client sets the notes aside and draws the diagram.
 const NOTE_DIAGRAM = `flowchart TD
@@ -865,6 +915,66 @@ export class MockApi {
       });
     }
     this.messageMap["ses_demo_long"] = long;
+
+    // A mixed 130-message conversation: short prompts, very long answers, code,
+    // tables, nested lists, math, diagrams, an image, tool calls and shell rows.
+    // Big enough that the client has to page (80 at a time) and still keep every
+    // message, in order, exactly once.
+    this.sessionList.push({
+      id: "ses_demo_stress",
+      projectID: "prj_web",
+      agent: "build",
+      model: MODEL,
+      title: "Stress: 130 mixed messages",
+      location: { directory: DIRS.web },
+      time: { created: now() - 9 * hour, updated: now() - 2 * hour, idle: now() - 2 * hour },
+    });
+    const stress = [];
+    const base = now() - 9 * hour;
+    let t = 0;
+    for (let turn = 0; turn < 65; turn += 1) {
+      t += 45_000;
+      const heavy = turn % 5 === 0;
+      stress.push({
+        id: `msg_st_u${turn}`,
+        type: "user",
+        text: heavy
+          ? `Turn ${turn}: give me the full picture, with code, a table, math and a diagram.`
+          : `Turn ${turn}: short follow-up ${"x".repeat(turn % 7)}`,
+        files: [],
+        time: { created: base + t },
+      });
+      const parts = [{ type: "reasoning", text: `Reading the request for turn ${turn}.`, ordinal: 0, time: { completed: base + t + 400 } }];
+      if (turn % 3 === 0) {
+        parts.push({
+          type: "tool",
+          id: `call_st_${turn}`,
+          name: turn % 2 ? "read" : "grep",
+          state: { status: "completed", input: { filePath: `src/module-${turn}.ts` }, content: [{ type: "text", text: "ok" }], time: { start: base + t + 500, end: base + t + 900 } },
+          executed: true,
+        });
+      }
+      const text = heavy
+        ? `## Turn ${turn}\n\n${"A long paragraph that keeps going. ".repeat(14)}\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n| 3 | 4 |\n\n- one\n  - two\n    - three\n\n\`\`\`ts\nconst turn${turn} = ${turn};\nexport default turn${turn};\n\`\`\`\n\nInline $t_{${turn}}$ and:\n\n$$\\sum_{i=0}^{${turn}} i = \\frac{${turn}(${turn}+1)}{2}$$\n\n\`\`\`mermaid\nflowchart LR\n  A${turn}[Start] --> B${turn}{Check}\n  B${turn} -- yes --> C${turn}[Done]\n\`\`\`\n\nThat is turn ${turn}.`
+        : `Turn ${turn} is short: checked \`src/module-${turn}.ts\` and nothing else changed.`;
+      parts.push({ type: "text", text, ordinal: 1, time: { completed: base + t + 2_000 } });
+      stress.push({
+        id: `msg_st_a${turn}`,
+        type: "assistant",
+        model: MODEL,
+        agent: "build",
+        content: parts,
+        time: { created: base + t + 1_000, completed: base + t + 2_000 },
+        tokens: { input: 2_000 + turn * 10, output: 120 + (heavy ? 600 : 0), cache: { read: 1_000, write: 0 } },
+        cost: 0.0004,
+      });
+      if (turn % 20 === 9) {
+        stress.push({ id: `msg_st_s${turn}`, type: "shell", command: `bun test test/turn-${turn}.test.ts`, status: "completed", output: { exit: 0 }, time: { created: base + t + 2_100 } });
+      }
+      stress.push({ id: `msg_st_i${turn}`, type: "idle", outcome: "succeeded", time: { created: base + t + 2_200 } });
+      t += 2_200;
+    }
+    this.messageMap["ses_demo_stress"] = stress;
   }
 
   beginRun(sid) {
@@ -891,10 +1001,113 @@ export class MockApi {
     return id;
   }
 
+  /** Every event needs its own id: the client deduplicates frames by id, exactly
+   *  as it does against the real server, and a repeated id would look like a
+   *  replay of an event it has already applied. */
+  eventId() {
+    this.evtSeq = (this.evtSeq ?? 0) + 1;
+    return "evt_" + this.evtSeq;
+  }
+
   emit(type, data) {
     // A dropped socket delivers nothing: the client has to notice by itself.
     if (this.dropped) return;
-    for (const h of this.handlers) h({ id: "evt_" + this.seq, type, data, created: now() });
+    const id = this.eventId();
+    for (const h of this.handlers) h({ id, type, data, created: now() });
+  }
+
+  /** Emit with an explicit id, so a test can deliver the exact same frame twice. */
+  emitWith(id, type, data) {
+    if (this.dropped) return;
+    for (const h of this.handlers) h({ id, type, data, created: now() });
+  }
+
+  /**
+   * A streaming turn built to be abused: chunk size, duplicate frames, empty
+   * frames, shuffled frames, a dropped socket, unicode. The stored message is
+   * always the clean document, so "what the server has" is a fixed target the
+   * UI has to converge on.
+   */
+  chaosTurn(sid, text, { chunk = 9, delay = 25, duplicate = false, empties = false, dropAt = 0, shuffle = false, unicode = false } = {}) {
+    const body = (unicode ? CHAOS_UNICODE : CHAOS_DOC) + `\n\nrequest: ${text}`;
+    const userMsg = { id: "msg_u_" + this.seq++, type: "user", text, files: [], time: { created: now() } };
+    const assistantId = "msg_c_" + this.seq++;
+    const assistant = {
+      id: assistantId,
+      type: "assistant",
+      model: MODEL,
+      agent: "build",
+      content: [{ type: "text", text: "", ordinal: 0 }],
+      time: { created: now() },
+      tokens: { input: 1200, output: 0, cache: { read: 0, write: 0 } },
+      cost: 0.0002,
+    };
+    this.messageMap[sid] = [...(this.messageMap[sid] ?? []), userMsg, assistant];
+    const token = this.beginRun(sid);
+    const ev = (name, data) => this.emit(name, { sessionID: sid, agent: "build", model: MODEL, ...data });
+    const pieces = [];
+    for (let i = 0; i < body.length; i += chunk) pieces.push(body.slice(i, i + chunk));
+    const order = pieces.map((_, i) => i);
+    if (shuffle) {
+      // deterministic bad order: swap adjacent pairs
+      for (let i = 0; i + 1 < order.length; i += 2) [order[i], order[i + 1]] = [order[i + 1], order[i]];
+    }
+    let at = 260;
+    let acc = "";
+    this.later(() => ev("session.execution.started", {}), 120);
+    this.later(() => {
+      ev("session.step.started", { assistantMessageID: assistantId, started: now() });
+      ev("session.text.started", { assistantMessageID: assistantId, ordinal: 0 });
+    }, 180);
+    const dropIndex = dropAt ? Math.floor(order.length * dropAt) : -1;
+    order.forEach((pieceIndex, n) => {
+      const piece = pieces[pieceIndex];
+      at += delay;
+      if (empties && n % 7 === 3) {
+        this.later(() => {
+          // an empty delta and a heartbeat-shaped frame: neither may corrupt state
+          this.emitWith("evt_empty_" + this.seq++, "session.text.delta", {
+            sessionID: sid,
+            assistantMessageID: assistantId,
+            ordinal: 0,
+            delta: "",
+          });
+          this.emitWith("evt_empty2_" + this.seq++, "session.text.delta", { sessionID: sid, assistantMessageID: assistantId, ordinal: 0 });
+        }, at);
+      }
+      this.later(() => {
+        const payload = { sessionID: sid, assistantMessageID: assistantId, ordinal: 0, delta: piece };
+        if (duplicate) {
+          // The very same frame twice, same id: applied twice it doubles text.
+          const id = "evt_dup_" + n;
+          this.emitWith(id, "session.text.delta", payload);
+          this.emitWith(id, "session.text.delta", payload);
+        } else {
+          ev("session.text.delta", { assistantMessageID: assistantId, ordinal: 0, delta: piece });
+        }
+      }, at);
+      if (dropIndex === n) {
+        this.later(() => {
+          this.dropped = true;
+          this.dropStream();
+        }, at + Math.floor(delay / 2));
+      }
+    });
+    // the server finishes the turn no matter what the socket did
+    this.later(() => {
+      assistant.content[0].text = body;
+      assistant.time.completed = now();
+      assistant.tokens.output = Math.ceil(body.length / 4);
+      this.messageMap[sid].push({ id: "msg_i_" + this.seq++, type: "idle", outcome: "succeeded", time: { created: now() } });
+      this.endRun(sid, token);
+      if (!this.dropped) {
+        ev("session.text.ended", { assistantMessageID: assistantId, ordinal: 0, text: body });
+        ev("session.step.ended", { assistantMessageID: assistantId, finish: "stop" });
+        ev("session.execution.succeeded", {});
+        ev("session.idle", {});
+      }
+    }, at + 260);
+    return { data: { id: userMsg.id, sessionID: sid, type: "user", payload: { text }, delivery: "steer", time: { created: now() } } };
   }
 
   clearTimers() {
@@ -1610,6 +1823,17 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
 
     // A run that ends while still cut off: the card offers Continue / Retry.
     if (/\b(cut off|partial answer)\b/i.test(text)) return this.partialTurn(sid, text);
+
+    // Streaming chaos, deterministic, one flag per prompt.
+    if (/chaos duplicate/i.test(text)) return this.chaosTurn(sid, text, { duplicate: true });
+    if (/chaos slow/i.test(text)) return this.chaosTurn(sid, text, { chunk: 3, delay: 300 });
+    if (/chaos rapid/i.test(text)) return this.chaosTurn(sid, text, { chunk: 14, delay: 6 });
+    if (/chaos onechar/i.test(text)) return this.chaosTurn(sid, text, { chunk: 1, delay: 10 });
+    if (/chaos huge/i.test(text)) return this.chaosTurn(sid, text, { chunk: 5000, delay: 40 });
+    if (/chaos empty/i.test(text)) return this.chaosTurn(sid, text, { empties: true });
+    if (/chaos break/i.test(text)) return this.chaosTurn(sid, text, { dropAt: 0.45 });
+    if (/chaos unicode/i.test(text)) return this.chaosTurn(sid, text, { unicode: true });
+    if (/chaos shuffle/i.test(text)) return this.chaosTurn(sid, text, { shuffle: true });
 
     if (/\b(fail|error|rate.?limit|429)\b/i.test(text)) return this.failTurn(sid, text);
 
