@@ -13,10 +13,21 @@ const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const icon = (name, cls = "") => `<svg class="${cls}"><use href="#i-${name}"/></svg>`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Preferences and small UI state in localStorage.
+ *
+ * Demo mode gets its own prefix: a demo tab or `lastSessionID` pointing at
+ * `ses_demo*` used to survive into the real app, which then tried to open a
+ * conversation that does not exist on the server.
+ */
+let storePrefix = "ocp.";
 const store = {
+  useDemoNamespace() {
+    storePrefix = "ocp.demo.";
+  },
   get(key, fallback) {
     try {
-      const raw = localStorage.getItem("ocp." + key);
+      const raw = localStorage.getItem(storePrefix + key);
       return raw == null ? fallback : JSON.parse(raw);
     } catch {
       return fallback;
@@ -24,12 +35,12 @@ const store = {
   },
   set(key, value) {
     try {
-      localStorage.setItem("ocp." + key, JSON.stringify(value));
+      localStorage.setItem(storePrefix + key, JSON.stringify(value));
     } catch {}
   },
   del(key) {
     try {
-      localStorage.removeItem("ocp." + key);
+      localStorage.removeItem(storePrefix + key);
     } catch {}
   },
 };
@@ -373,7 +384,25 @@ async function connect(baseInput, secretInput) {
   await enterApp();
 }
 
+/**
+ * Drop anything a demo run left in the real preferences.
+ *
+ * Demo state is namespaced now, but an install that ran the demo before that
+ * still has `ses_demo*` in "last session" and in the tab strip, and opening one
+ * against the real server answers 404. One pass is enough.
+ */
+function purgeDemoState() {
+  if (state.demo) return;
+  const last = store.get("lastSessionID", null);
+  if (typeof last === "string" && last.startsWith("ses_demo")) store.del("lastSessionID");
+  const tabs = store.get("sessionTabs", []);
+  if (Array.isArray(tabs) && tabs.some((id) => String(id).startsWith("ses_demo"))) {
+    store.set("sessionTabs", tabs.filter((id) => !String(id).startsWith("ses_demo")));
+  }
+}
+
 async function enterApp() {
+  purgeDemoState();
   showScreen("sessions");
   setConnection("online", "Connected");
   renderSessionSkeleton();
@@ -564,6 +593,15 @@ async function refreshSessions(showSkeleton = false) {
     const local = await History.getSessions().catch(() => []);
     const ids = new Set(remote.map((s) => s.id));
     const q = state.search.toLowerCase();
+    // Demo transcripts live on the same origin, so an earlier demo run used to
+    // leave ses_demo* in the recovery cache and the real app then opened them,
+    // 404ed, and showed a fake "server offline" copy. Demo data never belongs
+    // in the real history: drop it (once) and stop writing it below.
+    if (!state.demo) {
+      for (const s of local) {
+        if (/^ses_demo/.test(s.id)) History.deleteSession(s.id).catch(() => {});
+      }
+    }
     // Keep local-only copies of sessions deleted upstream until the user
     // explicitly deletes them, and apply the same search filter to them.
     state.sessions = [
@@ -571,11 +609,12 @@ async function refreshSessions(showSkeleton = false) {
       ...local.filter(
         (s) =>
           !ids.has(s.id) &&
+          (state.demo || !/^ses_demo/.test(s.id)) &&
           !s.time?.archived &&
           (!q || (s.title ?? "").toLowerCase().includes(q) || (s.location?.directory ?? "").toLowerCase().includes(q))
       ),
     ];
-    History.putSessions(remote).catch(() => {});
+    if (!state.demo) History.putSessions(remote).catch(() => {});
     state.sessionsCursor = res?.cursor?.next ?? null;
     renderSessions();
     renderSidebar();
@@ -1095,7 +1134,9 @@ async function loadMessages() {
     // `cursor.next` is the page of *older* messages: a long task is never cut
     // off at the top of the screen.
     state.messagesCursor = res?.cursor?.next ?? null;
-    // Keep an on-device recovery copy. It is never expired or auto-deleted.
+    // Keep an on-device recovery copy. It is never expired or auto-deleted. Demo
+    // mode writes to its own database (see history.js), so this never mixes
+    // fake transcripts into the real recovery copy.
     History.putSession(state.session).catch(() => {});
     History.putMessages(state.session.id, state.messages).catch(() => {});
     renderMessages(firstLoad);
@@ -7436,6 +7477,10 @@ async function boot() {
 
   if (new URLSearchParams(location.search).get("demo") === "1") {
     const { MockApi } = await import("./mock.js");
+    // Demo state is isolated: its own IndexedDB (never the real recovery copy)
+    // and its own localStorage prefix (never the real last-session or tabs).
+    History.useDemoNamespace();
+    store.useDemoNamespace();
     state.api = new MockApi();
     state.base = "demo://pocket";
     state.info = await state.api.info();

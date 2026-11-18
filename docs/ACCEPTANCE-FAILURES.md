@@ -19,8 +19,9 @@ Date: 2026-11-18. Server: embedded `runtime-v2.3.0-r1`.
 | `test/device-live.cjs` | **new** — the installed APK's own WebView over CDP, against the real daemon: identity, a real turn, Stop, a real backup, daemon kill → banner → restart recovery | 5 passed, 0 failed |
 | `test/device-reinstall.cjs` | **new** — real `adb uninstall` + `install`, fresh-install offer, restore from the system file picker, original ids, transcript opens. The engine bundle is put back in place on purpose, so this suite never depends on the phone's network | 9 passed, 0 failed |
 | `test/device-fresh-install.cjs` | **new** — the real first run: uninstall, install, and let the app **download the engine from the repo's GitHub release itself** (progress, SHA, unpack, daemon), then offer and restore the backup | 6 passed, 0 failed |
+| `test/device-render.cjs` | **new** — the renderer adopted from [Aurora Preview](THIRD-PARTY.md) inside the installed APK: callouts, KaTeX inline + block, highlight.js, tables, tasks, footnote, Hindi, image lightbox, lazy Mermaid + full-screen viewer, self-contained HTML export into Downloads, the Android print service | 7 passed, 0 failed |
 
-Total: **140 web checks + 20 device checks, 0 failures.**
+Total: **141 web checks + 27 device checks, 0 failures.**
 
 Reproduce:
 
@@ -159,6 +160,39 @@ own toggle; chain-of-thought is never dumped into the transcript.
 turn" (states observed: Thinking → Working; panel survives). Device: `device-live` real
 turn reported the Thinking state live; `suite-9` (live multi-step) still passes, and no
 running turn flashes a finished panel.
+
+## 4b. The renderer adopted from Aurora Preview (verified on the phone)
+
+The transcript renderer's shape comes from **Aurora Preview** (MIT,
+`github.com/Abhishekkumar2021/aurora-preview`): the markdown-it plugin set, the
+DOMPurify pass, the frontmatter card, the code-block toolbar, the lightbox and the
+self-contained HTML export — see `docs/THIRD-PARTY.md`. It was already covered by the
+browser suites (`suite-11`, 14 checks); `test/device-render.cjs` now drives the real
+WebView of the installed APK and checks each adopted piece on the phone:
+
+| Checked on device | Result |
+| --- | --- |
+| Bundled pipeline, no CDN | `pocket-md.mjs` + local `katex.css`, **0 external requests** |
+| GitHub callouts | 1 warning callout with its icon and title |
+| KaTeX | 1 inline + 1 block, raw TeX gone |
+| highlight.js | 13 tokens, copy/fullscreen toolbar present |
+| Tables / tasks / footnotes | 4 rows / 3 tasks (1 done) / footnote ref + note |
+| Hindi text | intact after render |
+| Mermaid | drawn lazily on scroll (443×126 px, 4 nodes), opens full-screen with a Source toggle |
+| Image lightbox | opens and closes |
+| Export HTML | `Session-refresh-…html` in `Downloads` (12 KB): doctype, MathML, callout CSS, `@media print`, no `<script>`, Hindi intact |
+| Print / Save as PDF | native bridge → `com.android.printspooler` print UI on top |
+
+**A real defect this uncovered.** Demo transcripts live on the same origin as the app,
+and they were written to the *same* IndexedDB and the *same* `ocp.*` localStorage keys.
+After a demo run, the real app found `ses_demo*` in the recovery cache and in the saved
+tab list, tried to open it against the real server (404 on `/view`, `/message`,
+`/permission`, `/diff`), and then showed the fake transcript with a "Showing saved copy —
+server offline" toast. Fix: demo mode now uses its own IndexedDB
+(`opencode-pocket-history-demo`) and its own `ocp.demo.` prefix, and the real app purges
+any `ses_demo*` ids a previous install left behind (cache, `lastSessionID`, tabs).
+`suite-12` checks the cache stays clean; `device-render` checks the real app comes back
+with 0 demo ids and no fake offline notice.
 
 ## 5. Stray Android selection toolbar
 

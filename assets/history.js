@@ -9,12 +9,28 @@
 const DB_NAME = "opencode-pocket-history";
 const DB_VERSION = 1;
 
+let dbName = DB_NAME;
 let dbPromise = null;
+
+/**
+ * Demo transcripts are fake, and they live on the same origin as the real app.
+ * Keeping them in this database made the real client offer them as "saved
+ * copies of a conversation the server no longer has". Demo mode therefore uses
+ * its own database and can never write into the real recovery copy.
+ */
+export function useDemoNamespace() {
+  if (dbName === DB_NAME + "-demo") return;
+  try {
+    dbPromise?.then((db) => db.close()).catch(() => {});
+  } catch {}
+  dbName = DB_NAME + "-demo";
+  dbPromise = null;
+}
 
 function openDb() {
   if (dbPromise) return dbPromise;
   dbPromise = new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    const req = indexedDB.open(dbName, DB_VERSION);
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains("sessions")) db.createObjectStore("sessions", { keyPath: "id" });

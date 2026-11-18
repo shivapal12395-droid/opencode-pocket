@@ -15,10 +15,14 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   await page.goto(`${process.env.POCKET_URL || "http://127.0.0.1:8099"}/?demo=1`, { waitUntil: "domcontentloaded" });
   await page.waitForSelector(".session-row", { timeout: 20000 });
 
+  // Demo mode deliberately uses its own database, so fake transcripts can never
+  // be offered later as a "saved copy" of a real conversation. The feature under
+  // test is the same; only the namespace differs in demo.
   await test("IndexedDB local history store", async () => {
     const dbs = await page.evaluate(() => indexedDB.databases());
-    assert(dbs.some((d) => d.name === "opencode-pocket-history"), JSON.stringify(dbs));
-    return "opencode-pocket-history";
+    assert(dbs.some((d) => d.name === "opencode-pocket-history-demo"), JSON.stringify(dbs));
+    assert(!dbs.some((d) => d.name === "opencode-pocket-history"), "demo touched the real store: " + JSON.stringify(dbs));
+    return "opencode-pocket-history-demo (real store untouched)";
   });
 
   await test("Opening a session saves a local copy", async () => {
@@ -26,7 +30,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     await page.waitForSelector(".msg", { timeout: 8000 });
     await sleep(600);
     const info = await page.evaluate(async () => {
-      const db = await new Promise((res) => { const r = indexedDB.open("opencode-pocket-history"); r.onsuccess = () => res(r.result); });
+      const db = await new Promise((res) => { const r = indexedDB.open("opencode-pocket-history-demo"); r.onsuccess = () => res(r.result); });
       const sessions = await new Promise((res) => { const r = db.transaction("sessions").objectStore("sessions").getAll(); r.onsuccess = () => res(r.result); });
       const messages = await new Promise((res) => { const r = db.transaction("messages").objectStore("messages").getAll(); r.onsuccess = () => res(r.result); });
       return { sessions: sessions.length, messages: messages.length };

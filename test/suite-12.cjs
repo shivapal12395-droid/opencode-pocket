@@ -261,6 +261,32 @@ const API_URL = () => pathToFileURL(path.join(__dirname, "..", "assets", "api.js
     return `${first.rows} -> ${second.rows} rows; ${anchor.id} held at ${anchor.top} -> ${second.top}px`;
   });
 
+  /* ---- 3b. the demo must never pollute the real recovery copy ------- */
+
+  await test("Demo transcripts stay out of the real history database", async () => {
+    await openSession("ses_demo1");
+    await sleep(700);
+    const counts = await page.evaluate(
+      () =>
+        new Promise((resolve) => {
+          const req = indexedDB.open("opencode-pocket-history");
+          req.onerror = () => resolve({ error: "cannot open" });
+          req.onsuccess = () => {
+            const db = req.result;
+            const names = [...db.objectStoreNames];
+            if (!names.includes("sessions")) return resolve({ sessions: 0, messages: 0, stores: names });
+            const tx = db.transaction(["sessions", "messages"], "readonly");
+            const s = tx.objectStore("sessions").count();
+            const m = tx.objectStore("messages").count();
+            tx.oncomplete = () => resolve({ sessions: s.result, messages: m.result, stores: names });
+          };
+        })
+    );
+    assert(!counts.error, counts.error);
+    assert(counts.sessions === 0 && counts.messages === 0, "the real cache holds demo data: " + JSON.stringify(counts));
+    return `${counts.sessions} sessions / ${counts.messages} messages in the real cache after opening demo chats`;
+  });
+
   /* ---- 6. transport -------------------------------------------------- */
 
   await test("Reads retry, writes never do", async () => {
