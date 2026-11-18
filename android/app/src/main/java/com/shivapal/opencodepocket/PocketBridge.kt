@@ -127,19 +127,26 @@ class PocketBridge(private val activity: MainActivity) {
                 web.settings.javaScriptEnabled = false // the document is static
                 web.setBackgroundColor(android.graphics.Color.WHITE)
                 web.isClickable = false
-                web.alpha = 0f
-                web.translationY = 100_000f // laid out, never seen
+                // Laid out and painted, but 99.99% transparent and pushed off
+                // screen: the print adapter paginates what was rendered, and a
+                // view that never painted gives a blank page.
+                web.alpha = 0.01f
+                web.translationY = 100_000f
+                var started = false
                 web.webViewClient = object : WebViewClient() {
                     override fun onPageFinished(view: WebView, url: String?) {
+                        if (started) return
+                        started = true
                         view.post {
                             try {
+                                val title = jobName.take(60).ifBlank { "OpenCode Pocket" }
                                 val manager = activity.getSystemService(Context.PRINT_SERVICE) as PrintManager
-                                val adapter = view.createPrintDocumentAdapter(jobName.take(60).ifBlank { "OpenCode Pocket" })
+                                val adapter = view.createPrintDocumentAdapter(title)
                                 val attrs = PrintAttributes.Builder()
                                     .setMediaSize(PrintAttributes.MediaSize.ISO_A4)
                                     .setMinMargins(PrintAttributes.Margins.NO_MARGINS)
                                     .build()
-                                manager.print(jobName.take(60).ifBlank { "OpenCode Pocket" }, adapter, attrs)
+                                manager.print(title, adapter, attrs)
                             } catch (e: Exception) {
                                 toast("Could not print: ${e.message}")
                             }
@@ -157,7 +164,8 @@ class PocketBridge(private val activity: MainActivity) {
     }
 
     @android.webkit.JavascriptInterface
-    fun shareText(text: String) {        val intent = Intent(Intent.ACTION_SEND).apply {
+    fun shareText(text: String) {
+        val intent = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
             putExtra(Intent.EXTRA_TEXT, text)
         }
