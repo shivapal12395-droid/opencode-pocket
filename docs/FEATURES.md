@@ -263,6 +263,39 @@ MCP write paths and the task checklist.
 
 ---
 
+## 11. Reading the answer: markdown, diagrams, math and export
+
+The transcript renders model output as a document. This section records what is
+implemented, what is intentionally not, and where the bounds are.
+
+| Capability | Pocket |
+| --- | --- |
+| Headings, paragraphs, nested lists, blockquotes, rules | **yes** - markdown-it, GFM line breaks |
+| Tables | **yes** - wrapped so a wide table scrolls sideways instead of squeezing |
+| Task lists | **yes** - checkbox drawn in the app's style; a finished item is filled with the accent |
+| Footnotes | **yes** - reference, separator and back-link |
+| GitHub callouts | **yes** - `NOTE`, `TIP`, `IMPORTANT`, `WARNING`, `CAUTION`, with the octicon and the accent/warn/danger edge |
+| Frontmatter | **yes** - leading YAML becomes a small metadata card instead of raw text |
+| Syntax highlighting | **yes** - highlight.js with 33 languages and the aliases a model actually writes (`js`, `ts`, `sh`, `yml`, `py`, …); AMOLED-tuned token colours with a light-theme set |
+| Code block controls | **yes** - language chip, line numbers for long plain blocks, wrap toggle, full-screen open, copy; wrap state survives a live rebuild |
+| Inline and block math | **yes** - KaTeX (`$…$`, `$$…$$`), horizontally scrollable display blocks, error-tolerant on incomplete input |
+| Mermaid diagrams | **yes** - drawn lazily through an IntersectionObserver, themed from the app palette, cached by source + theme so a transcript rebuild replays instead of redrawing; a broken diagram leaves its source with the reason; >30 KB source is not drawn |
+| Diagram viewer | **yes** - full screen with a Diagram / Source toggle |
+| Image viewer | **yes** - tap an image in the transcript or an artifact for full screen; Escape and the back gesture close it |
+| Raw HTML in a reply | **no, by design** - `html: false`; a reply is text, never markup |
+| Sanitising | **yes** - every render passes DOMPurify (no `script`, `iframe`, `form`, `object`, `embed`, `style`; `javascript:` links rejected before sanitising) |
+| Typographer | **off, by design** - quotes and dashes stay exactly as the model wrote them |
+| Streaming | **yes** - incomplete fences and half-written math stay readable; the transcript is rebuilt only when its signature changes, and rendered blocks are cached by source text |
+| Large answers | **bounded** - 165 KB of markdown renders in ~100 ms in Chromium on this machine; the cache makes a rebuild effectively free; diagrams are capped and drawn only when near the viewport |
+| Export HTML | **yes** - one self-contained file: dark reading view on screen, light print sheet for paper, MathML math (no font pack), table of contents when there are 3+ headings, no scripts |
+| Print / Save as PDF | **yes** - system print dialog. Native app: an offscreen laid-out WebView feeds `PrintManager`, so "Save as PDF" produces a real PDF; browser: an offscreen iframe with the same document. When neither surface exists the HTML is saved and the reason is shown |
+| Export from an artifact | **yes** - document artifacts get the same two actions |
+| Export of a whole session | **part** - the session menu exports JSON and Markdown; HTML/PDF are per answer/artifact |
+| VS Code integration | **not applicable** - no editor in a phone client; the parts Aurora used for that (scroll sync, theme inheritance, commands) were not ported |
+| Offline rendering | **yes** - all rendering libs are local files (`assets/vendor/`); no CDN, no network for math or diagrams |
+
+---
+
 ## Sources
 
 - <https://opencode.ai/docs/> and its subpages: tools, permissions, agents, skills,

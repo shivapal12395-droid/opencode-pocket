@@ -1456,3 +1456,168 @@ button.setting-row { width: 100%; text-align: left; background: none; border: 0;
 }
 .mcp-actions button:last-child { border-right: 0; }
 .mcp-actions button:active { background: var(--elev-2); color: var(--text); }
+
+/* ---- rich markdown in the transcript ---------------------------------------
+   Libraries ported from Aurora Preview (MIT, see docs/THIRD-PARTY.md): GitHub
+   callouts, KaTeX math, highlight.js tokens, footnotes, a frontmatter card, and
+   the image/diagram lightbox. Colours come from the app's own palette, so the
+   AMOLED theme and the accent stay in charge. */
+
+/* GitHub-style callouts: > [!NOTE] and friends */
+.md .markdown-alert {
+  margin: 0 0 10px; padding: 9px 11px 9px 12px; border-radius: 10px;
+  border: 1px solid var(--line); border-left: 3px solid var(--muted-2);
+  background: var(--soft);
+}
+.md .markdown-alert-title {
+  display: flex; align-items: center; gap: 6px;
+  margin: 0 0 4px; font-size: 12px; font-weight: 700;
+  letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted);
+}
+.md .markdown-alert .octicon { width: 14px; height: 14px; fill: currentColor; flex: none; }
+.md .markdown-alert > p:last-child { margin-bottom: 0; }
+.md .markdown-alert-note { border-left-color: var(--accent); background: var(--accent-soft); }
+.md .markdown-alert-note .markdown-alert-title { color: var(--accent); }
+.md .markdown-alert-tip { border-left-color: var(--ok); }
+.md .markdown-alert-tip .markdown-alert-title { color: var(--ok); }
+.md .markdown-alert-important { border-left-color: var(--accent); }
+.md .markdown-alert-important .markdown-alert-title { color: var(--accent); }
+.md .markdown-alert-warning { border-left-color: var(--warn); }
+.md .markdown-alert-warning .markdown-alert-title { color: var(--warn); }
+.md .markdown-alert-caution { border-left-color: var(--danger); }
+.md .markdown-alert-caution .markdown-alert-title { color: var(--danger); }
+
+/* math: KaTeX renders into <eq>/<eqn> wrappers from markdown-it-texmath */
+.md eq, .md eqn { display: inline; }
+.md eqn { display: block; margin: 0 0 11px; }
+.md .katex { font-size: 1.03em; }
+.md .katex-display { margin: 0; padding: 8px 2px; overflow-x: auto; overflow-y: hidden; }
+.md eqn > .katex-display { padding: 8px 10px; background: var(--soft); border-radius: 9px; }
+/* the plain-notation fallback still exists for documents rendered earlier */
+.math-inline, .math-block {
+  font-family: var(--mono); font-size: 0.92em;
+  background: var(--soft); border-radius: 5px; padding: 1px 4px;
+}
+.math-block { display: block; padding: 9px 11px; margin: 0 0 10px; white-space: pre-wrap; overflow-x: auto; }
+
+/* syntax highlighting tokens, tuned for a black OLED screen */
+.hljs { color: #e6e8ec; background: transparent; }
+.hljs-comment, .hljs-quote { color: #7a8394; font-style: italic; }
+.hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-doctag { color: #c792ea; }
+.hljs-string, .hljs-regexp, .hljs-addition { color: #9ece6a; }
+.hljs-number, .hljs-symbol, .hljs-bullet { color: #ffb86c; }
+.hljs-title, .hljs-title.function_, .hljs-function .hljs-title { color: #82aaff; }
+.hljs-title.class_, .hljs-type, .hljs-class .hljs-title { color: #ffcb6b; }
+.hljs-variable, .hljs-template-variable, .hljs-params { color: #e6e8ec; }
+.hljs-built_in, .hljs-builtin-name { color: #f78c6c; }
+.hljs-attr, .hljs-attribute, .hljs-property { color: #ffcb6b; }
+.hljs-tag, .hljs-name, .hljs-selector-id, .hljs-selector-class { color: #f07178; }
+.hljs-meta, .hljs-meta .hljs-keyword { color: #82aaff; }
+.hljs-deletion { color: #f07178; }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: 650; }
+:root[data-theme="light"] .hljs { color: #1f2937; }
+:root[data-theme="light"] .hljs-comment, :root[data-theme="light"] .hljs-quote { color: #6b7280; }
+:root[data-theme="light"] .hljs-keyword, :root[data-theme="light"] .hljs-selector-tag,
+:root[data-theme="light"] .hljs-literal, :root[data-theme="light"] .hljs-doctag { color: #7c3aed; }
+:root[data-theme="light"] .hljs-string, :root[data-theme="light"] .hljs-regexp,
+:root[data-theme="light"] .hljs-addition { color: #15803d; }
+:root[data-theme="light"] .hljs-number, :root[data-theme="light"] .hljs-symbol { color: #b45309; }
+:root[data-theme="light"] .hljs-title, :root[data-theme="light"] .hljs-meta { color: #1d4ed8; }
+:root[data-theme="light"] .hljs-title.class_, :root[data-theme="light"] .hljs-type { color: #a16207; }
+:root[data-theme="light"] .hljs-tag, :root[data-theme="light"] .hljs-name { color: #be123c; }
+
+/* Mermaid: the source shows while the turn is still running, the drawing
+   replaces it once it settles. Tap either to open it full screen. */
+.md pre.mermaid {
+  margin: 0 0 11px; padding: 10px 12px; border-radius: 10px;
+  border: 1px dashed var(--line-strong); background: var(--soft);
+  font-family: var(--mono); font-size: calc(11.6px * var(--code-scale));
+  line-height: 1.5; color: var(--muted); overflow-x: auto; white-space: pre;
+}
+.md pre.mermaid::before {
+  content: "diagram"; display: block; margin-bottom: 6px;
+  font-family: var(--font); font-size: 10px; font-weight: 700;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted-2);
+}
+.md pre.mermaid.drawn {
+  border: 1px solid var(--line); background: var(--elev); padding: 12px;
+  cursor: zoom-in; text-align: center;
+}
+.md pre.mermaid.drawn::before { content: none; }
+.md pre.mermaid.drawn svg { max-width: 100%; height: auto; }
+.md pre.mermaid.failed { border-style: solid; border-color: var(--danger); }
+.md .mermaid-error {
+  display: block; margin: -4px 0 11px; font-size: 11.5px; color: var(--danger);
+}
+
+/* footnotes */
+.md .footnote-ref a { text-decoration: none; }
+.md .footnotes-sep { margin: 14px 0 8px; border: 0; border-top: 1px solid var(--line); }
+.md .footnotes { font-size: calc(12.8px * var(--font-scale)); color: var(--muted); }
+.md .footnotes-list { padding-left: 18px; }
+.md .footnote-backref { text-decoration: none; margin-left: 4px; }
+
+/* task lists (the engine swaps the checkbox for this mark) */
+.md .contains-task-list { padding-left: 4px; }
+.md .task-list-item { list-style: none; }
+.md .task-list-item > label { display: inline; }
+
+/* frontmatter card */
+.md .frontmatter {
+  margin: 0 0 12px; padding: 10px 12px; border-radius: 11px;
+  border: 1px solid var(--line); background: var(--soft);
+}
+.md .fm-title { font-size: 14px; font-weight: 650; }
+.md .fm-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 5px; }
+.md .fm-field { font-size: 11.5px; color: var(--muted); }
+.md .fm-key { color: var(--muted-2); margin-right: 4px; }
+.md .fm-key::after { content: ":"; }
+
+/* ---- image and diagram lightbox ------------------------------------------- */
+.md img, .md pre.mermaid.drawn { cursor: zoom-in; }
+.lightbox {
+  position: fixed; inset: 0; z-index: 80; display: none;
+  background: rgba(0, 0, 0, 0.92); padding: calc(18px + var(--sat)) 14px calc(18px + var(--sab));
+}
+.lightbox.open { display: flex; align-items: center; justify-content: center; }
+.lightbox-content { max-width: 100%; max-height: 100%; overflow: auto; text-align: center; padding-top: 34px; }
+.lightbox-content img { max-width: 100%; max-height: 82dvh; border-radius: 10px; }
+.lightbox-content.diagram svg { max-width: 100%; height: auto; background: var(--elev); border-radius: 10px; }
+.lightbox-code {
+  margin: 0 auto; text-align: left; max-width: min(92vw, 760px); max-height: 78dvh;
+  overflow: auto; padding: 14px 16px; border-radius: 10px;
+  background: #0d0d11; color: #e8e8ee; border: 1px solid rgba(255, 255, 255, 0.12);
+  font: calc(12.4px * var(--code-scale)) / 1.6 var(--mono);
+  white-space: pre-wrap; word-break: break-word;
+}
+.lightbox-bar {
+  position: absolute; top: calc(12px + var(--sat)); right: 12px; z-index: 2;
+  display: flex; align-items: center; gap: 8px;
+}
+.lightbox-tool {
+  height: 34px; padding: 0 13px; border-radius: 99px;
+  border: 1px solid rgba(255, 255, 255, 0.18); background: rgba(255, 255, 255, 0.12);
+  color: #fff; font: 600 12px/1 var(--font); cursor: pointer;
+}
+.lightbox-close {
+  position: static;
+  width: 34px; height: 34px; border-radius: 99px; border: 0;
+  background: rgba(255, 255, 255, 0.12); color: #fff; display: grid; place-items: center;
+}
+.lightbox-close svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; }
+
+/* a diagram opened from the artifact card */
+.artifact-body pre.mermaid {
+  margin: 0; padding: 12px; border-radius: 10px; border: 1px dashed var(--line-strong);
+  background: var(--soft); color: var(--muted);
+  font: calc(11.6px * var(--code-scale)) / 1.55 var(--mono);
+  overflow-x: auto; white-space: pre;
+}
+.artifact-diagram.drawn { border: 0; background: none; padding: 0; text-align: center; cursor: zoom-in; }
+.artifact-diagram.drawn svg { max-width: 100%; height: auto; }
+
+/* ---- export ---------------------------------------------------------------
+   HTML export and printing build their own documents (assets/export.js); the
+   chat stylesheet deliberately has no print rules, so nothing here can leak
+   into a printed page. */

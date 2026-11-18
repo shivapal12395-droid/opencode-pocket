@@ -440,6 +440,81 @@ Every release runs the same loop, in this order, so nothing ships half-checked.
 - Reply in the issue tracker to everyone who reported a fixed bug
 - Write down what slowed this release down, while it is still fresh`;
 
+// A transcript that exercises the whole rendering stack: callouts, math, a
+// diagram, highlighted code, tasks, footnotes, a table and an image. It is the
+// fixture suite-11 reads, and it is what the demo shows when someone asks for
+// "markdown".
+const DEMO_IMAGE =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGAAAAA4CAYAAAACRf2iAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAIlSURBVHhe7ZfLkcIwEEQJdEMhDS7EwJUESICjU6CKILRllzHjcY9kjOX21vZUvYv1QZqnH4fjT0qCx8F/ENsiAWQkgIwEkJEAMhJARgLISAAZCSAjAWQkgIwEkJEAMhJARgLISAAZCSAjAWQkgIwEkJEAMhJARgLISAAZCSCzSMDpmsrxSOkE2tbGjq05T8v3Rj0BfdyO0/Y12VJAc59++5TqAtIKg/yELQQMv7HC3L4W8Lzmy9u4gD5qUV3A2UxsrwJabo93HSSgeRdn6w3YifeBfjsSMFoU4H663E15H348qE4XoL+5VBGQ2wG+zAfqL5x4G27ySEAp+WgxvMJKDMcB+pzL1wKKYbfpMaWnKbIXtE3C6OiwK99M1CYjWundd7dzcqva9hPu4L0dQaWwg48m22HlmInZNqMXla1vxIwEuBXrk98yiPfJNIke7cq/IgAdJXaVZ5NhytG3HOHYULLcjgzDtt2bAJToiFIy0bYvtfGEAtCuAxc7jP8iAJWjbzm8gOaKj6qOJclc0ibDpgJWvQMCOZNLuDDeoY8Zr6ncOJeyqQC/5aNX0CjRwStotNJNIqLEIVktVrCdS1Q/uvyXsq0AnzgQk52Re3/3YRMUCcgdHXP/B4T1vxCxuYAXk0n4leZBFyY4AkIB7pL3xxmSHI4HvJ7CugUWCRDrIQFkJICMBJCRADISQEYCyEgAGQkgIwFkJICMBJCRADISQEYCyEgAGQkgIwFkJICMBJCRADISQEYCyPwC3vl+OPtPLhUAAAAASUVORK5CYII=";
+
+const RICH_ANSWER = `## Session refresh
+
+The redirect is fine; the cookie is not. The token is written without an expiry, so it dies with the process.
+
+> [!WARNING]
+> Restart the dev server after changing the cookie options, or the old flow keeps answering.
+
+| Field | Value |
+| --- | --- |
+| \`httpOnly\` | \`true\` |
+| \`sameSite\` | \`lax\` |
+| Expiry | 30 days |
+
+- [x] read \`src/auth/session.ts\`
+- [ ] set a 30-day expiry
+- [ ] test after 20 minutes
+
+The lifetime follows $T_{exp} = 30\\,d$ and the refresh curve is:
+
+$$
+r = \\frac{n}{1 + n \\cdot e^{-k(x - x_0)}}
+$$
+
+\`\`\`mermaid
+flowchart LR
+  A[Login] --> B{Cookie?}
+  B -- yes --> C[Refresh]
+  B -- no --> D[Redirect]
+\`\`\`
+
+\`\`\`ts
+await cookies.set("refresh", token.refresh, {
+  httpOnly: true,
+  sameSite: "lax",
+  maxAge: 60 * 60 * 24 * 30,
+});
+\`\`\`
+
+![the refreshed logo](${DEMO_IMAGE})
+
+**नमस्ते** — the Hindi text has to survive untouched. A claim needs a source[^1].
+
+[^1]: the session notes in \`docs/API-MAP.md\``;
+
+MESSAGES.ses_demo10 = [
+  {
+    id: "msg_d10u",
+    type: "user",
+    text: "Session logout ho raha hai 20 minute baad. Explain with the flow and what to change.",
+    files: [],
+    time: { created: now() - 50 * min },
+  },
+  {
+    id: "msg_d10a",
+    type: "assistant",
+    model: MODEL,
+    agent: "build",
+    time: { created: now() - 50 * min, completed: now() - 49 * min },
+    tokens: { input: 21_300, output: 940, cache: { read: 15_200, write: 0 } },
+    cost: 0.0033,
+    content: [
+      { type: "reasoning", text: "Explain the refresh path, then show the cookie change.", ordinal: 0 },
+      { type: "text", text: RICH_ANSWER, ordinal: 1 },
+    ],
+  },
+  { id: "msg_d10i", type: "idle", outcome: "succeeded", time: { created: now() - 49 * min + 1_000 } },
+];
+
 MESSAGES.ses_demo7 = [
   {
     id: "msg_d7u",
@@ -624,6 +699,15 @@ SESSIONS.push(
     title: "Backend health check",
     location: { directory: DIRS.api },
     time: { created: now() - 2 * hour, updated: now() - 95 * min, idle: now() - 95 * min },
+  },
+  {
+    id: "ses_demo10",
+    projectID: "prj_api",
+    agent: "build",
+    model: MODEL,
+    title: "Session refresh and cookie expiry",
+    location: { directory: DIRS.api },
+    time: { created: now() - 50 * min, updated: now() - 49 * min, idle: now() - 49 * min },
   }
 );
 
@@ -1341,6 +1425,10 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
     // Anything destructive asks for approval first, like the real permission gate.
     if (/\b(deploy|force.?push|rm -rf)\b/i.test(text)) return this.openPermission(sid, text);
 
+    // The rich-markdown answer: streamed in chunks, so an unfinished code fence
+    // and a half-written math block are both on screen for most of the turn.
+    if (/\b(rich|markdown|render|diagram|math)\b/i.test(text)) return this.streamRich(sid, text);
+
     // Deterministic multi-step turn: two assistant messages in one request,
     // emitted step by step so the activity panel can be observed live (and so
     // the demo looks like a real turn instead of an instant paste).
@@ -1471,6 +1559,53 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
       }
       this.endRun(sid, runToken);
     }, at + 120);
+
+    return { data: { id: userMsg.id, sessionID: sid, type: "user", payload: { text }, delivery: "steer", time: { created: now() } } };
+  }
+
+  /** Streams the rich fixture in small chunks: fences and math arrive broken. */
+  streamRich(sid, text) {
+    const userMsg = { id: "msg_u_" + this.seq++, type: "user", text, files: [], time: { created: now() } };
+    const assistantId = "msg_a_" + this.seq++;
+    const assistant = {
+      id: assistantId,
+      type: "assistant",
+      model: MODEL,
+      agent: "build",
+      content: [{ type: "text", text: "", ordinal: 0 }],
+      time: { created: now() },
+    };
+    this.messageMap[sid] = [...(this.messageMap[sid] ?? []), userMsg, assistant];
+    const runToken = this.beginRun(sid);
+
+    this.later(() => this.emit("session.execution.started", { sessionID: sid }), 120);
+    this.later(() => {
+      this.emit("session.step.started", { sessionID: sid, assistantMessageID: assistantId, agent: "build", model: MODEL, started: now() });
+      this.emit("session.text.started", { sessionID: sid, assistantMessageID: assistantId, ordinal: 0 });
+    }, 260);
+
+    let at = 320;
+    let acc = "";
+    for (const chunk of RICH_ANSWER.match(/[\s\S]{1,13}/g) ?? []) {
+      acc += chunk;
+      const snapshot = acc;
+      this.later(() => {
+        assistant.content[0].text = snapshot;
+        this.emit("session.text.delta", { sessionID: sid, assistantMessageID: assistantId, ordinal: 0, delta: chunk });
+      }, at);
+      at += 17;
+    }
+    this.later(() => {
+      assistant.time.completed = now();
+      assistant.tokens = { input: 18_400, output: 900, cache: { read: 12_100, write: 0 } };
+      assistant.cost = 0.0029;
+      this.emit("session.text.ended", { sessionID: sid, assistantMessageID: assistantId, ordinal: 0, text: RICH_ANSWER });
+      this.emit("session.step.ended", { sessionID: sid, assistantMessageID: assistantId, finish: "stop" });
+      this.emit("session.execution.succeeded", { sessionID: sid });
+      this.messageMap[sid].push({ id: "msg_i_" + this.seq++, type: "idle", outcome: "succeeded", time: { created: now() } });
+      this.emit("session.idle", { sessionID: sid });
+      this.endRun(sid, runToken);
+    }, at + 160);
 
     return { data: { id: userMsg.id, sessionID: sid, type: "user", payload: { text }, delivery: "steer", time: { created: now() } } };
   }

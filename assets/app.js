@@ -4,6 +4,7 @@ import { formCardHtml, buildAnswer, missingRequired, applyFormConditions, readFo
 import { getPrefs, setPref, onPrefs, applyPrefs, ACCENTS, DEFAULTS, densityLabel, verbosityLabel, verbosityHint, scaleLabel } from "./prefs.js";
 import { detectArtifacts, artifactCardHtml, artifactBodyHtml } from "./artifacts.js";
 import * as History from "./history.js";
+import { buildStandaloneHtml, exportName, printDocument } from "./export.js";
 
 /* ---------------------------------------------------------------- utils */
 
@@ -159,6 +160,10 @@ function cacheDom() {
   el.sheetClose = $("#sheet-close");
   el.sheetBack = $("#sheet-back");
   el.toast = $("#toast");
+  el.lightbox = $("#lightbox");
+  el.lightboxBody = $("#lightbox-body");
+  el.lightboxClose = $("#lightbox-close");
+  el.lightboxSource = $("#lightbox-source");
 }
 
 /* ---------------------------------------------------------------- theme */
@@ -611,6 +616,57 @@ function markdownOf(m) {
   return parts.map((p) => p.text).join("\n\n").trim();
 }
 
+/* ------------------------------------------------------------ export
+ * The answer is exported as the document it reads like in the chat, not as the
+ * raw transcript markup, and without the tool chatter that belongs to the app.
+ */
+
+function documentTitleOf(markdown, fallback = "OpenCode answer") {
+  const heading = String(markdown).match(/^\s*#{1,3}\s+(.+)$/m);
+  if (heading) return heading[1].replace(/[*_`]/g, "").trim().slice(0, 80) || fallback;
+  const first = String(markdown)
+    .split(/\r?\n/)
+    .map((l) => l.replace(/^[>\s*#-]+/, "").trim())
+    .find((l) => l.length > 2);
+  return (first ?? fallback).slice(0, 80);
+}
+
+function documentMeta(m) {
+  const when = m?.time?.created ? new Date(m.time.created).toLocaleString() : new Date().toLocaleString();
+  const session = state.session?.title?.trim() || "OpenCode session";
+  return `${session} · ${when}`;
+}
+
+function saveAnswerHtml(markdown, m) {
+  const title = documentTitleOf(markdown, state.session?.title || "OpenCode answer");
+  const html = buildStandaloneHtml({
+    title,
+    markdown,
+    meta: documentMeta(m),
+    origin: state.base && !state.demo ? state.base : "",
+  });
+  downloadText(exportName(title, "html"), html, "text/html");
+  return html;
+}
+
+async function printMarkdownDoc(markdown, { title, meta, origin }) {
+  const result = await printDocument({ title, markdown, meta, origin });
+  if (result.via === "none") {
+    // Honest fallback: keep the document, say why the dialog did not open.
+    downloadText(exportName(title, "html"), result.html, "text/html");
+    toast("Printing is not available here — saved the HTML (" + (result.reason || "no print surface") + ")");
+  }
+  return result;
+}
+
+async function printAnswer(markdown, m) {
+  return printMarkdownDoc(markdown, {
+    title: documentTitleOf(markdown, state.session?.title || "OpenCode answer"),
+    meta: documentMeta(m),
+    origin: state.base && !state.demo ? state.base : "",
+  });
+}
+
 async function shareText(text) {
   if (navigator.share) {
     try {
@@ -655,6 +711,8 @@ function openMessageSheet(m) {
         ${sheetRow({ iconName: "copy", title: "Copy text", attrs: "data-mact=copy" })}
         ${isAssistant ? sheetRow({ iconName: "code", title: "Copy as Markdown", attrs: "data-mact=copy-md" }) : ""}
         ${isAssistant ? sheetRow({ iconName: "save", title: "Save as .md", attrs: "data-mact=save" }) : ""}
+        ${isAssistant ? sheetRow({ iconName: "download", title: "Export HTML", sub: "One file, no dependencies", attrs: "data-mact=export-html" }) : ""}
+        ${isAssistant ? sheetRow({ iconName: "print", title: "Print / Save as PDF", sub: "Opens the system print dialog", attrs: "data-mact=print" }) : ""}
         ${isAssistant ? sheetRow({ iconName: "share", title: "Share", attrs: "data-mact=share" }) : ""}
         ${isAssistant ? sheetRow({ iconName: "rotate", title: "Ask again", sub: "Re-runs the same prompt", attrs: "data-mact=regen" }) : ""}
         ${sheetRow({ iconName: "edit", title: isAssistant ? "Copy into composer" : "Edit and resend", attrs: "data-mact=edit" })}
@@ -670,6 +728,16 @@ function openMessageSheet(m) {
         if (act === "save" && isAssistant) {
           const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-");
           downloadText(`opencode-answer-${stamp}.md`, markdownOf(m));
+        }
+        if (act === "export-html" && isAssistant) {
+          const md = markdownOf(m);
+          if (!md) return toast("This answer has no text to export");
+          saveAnswerHtml(md, m);
+        }
+        if (act === "print" && isAssistant) {
+          const md = markdownOf(m);
+          if (!md) return toast("This answer has no text to export");
+          await printAnswer(md, m);
         }
         if (act === "share") return shareText(text);
         if (act === "regen") return askAgain(m);
@@ -1461,6 +1529,203 @@ function resetMessageRender() {
   state.skipEntrance = true;
 }
 
+/* ------------------------------------------------ rich transcript extras
+ * Diagrams and the viewer live here rather than in markdown.js because both
+ * need the live DOM. Two rules keep a phone happy:
+ *
+ *   - a diagram is drawn only when it scrolls into view, and its SVG is cached
+ *     by source text, so rebuilding the transcript while a later answer streams
+ *     replays the drawing instead of paying for Mermaid again;
+ *   - nothing is drawn while a turn is still writing, because half a diagram is
+ *     a parse error, not a preview.
+ */
+
+const diagramEngine = { module: null, observer: null, cache: new Map() };
+const DIAGRAM_CACHE_MAX = 40;
+const DIAGRAM_MAX_SOURCE = 30000;
+
+const themeKey = () => document.documentElement.dataset.theme || "amoled";
+
+function diagramObserver() {
+  if (diagramEngine.observer) return diagramEngine.observer;
+  diagramEngine.observer = new IntersectionObserver(
+    (entries) => {
+      const batch = entries.filter((x) => x.isIntersecting).map((x) => x.target);
+      for (const node of batch) diagramEngine.observer.unobserve(node);
+      if (batch.length) drawDiagrams(batch);
+    },
+    { root: el.messages, rootMargin: "600px 0px" }
+  );
+  return diagramEngine.observer;
+}
+
+async function drawDiagrams(nodes) {
+  const list = nodes.filter((n) => n.isConnected && !n.classList.contains("drawn") && !n.classList.contains("failed"));
+  if (!list.length) return;
+  let mod;
+  try {
+    diagramEngine.module ??= import("./vendor/pocket-mermaid.mjs");
+    mod = await diagramEngine.module;
+  } catch (err) {
+    for (const node of list) markDiagramFailed(node, err);
+    return;
+  }
+  for (const node of list) {
+    if (!node.isConnected || node.classList.contains("drawn")) continue;
+    const source = node.textContent ?? "";
+    try {
+      const svg = await mod.drawOne(node, source);
+      rememberDiagram(source, svg);
+    } catch (err) {
+      markDiagramFailed(node, err);
+    }
+  }
+}
+
+async function paintArtifactDiagrams() {
+  const nodes = $$("pre.mermaid:not(.drawn):not(.failed)", el.artifactBody);
+  if (!nodes.length) return;
+  let mod;
+  try {
+    diagramEngine.module ??= import("./vendor/pocket-mermaid.mjs");
+    mod = await diagramEngine.module;
+  } catch (err) {
+    for (const node of nodes) markDiagramFailed(node, err);
+    return;
+  }
+  for (const node of nodes) {
+    if (!node.isConnected) continue;
+    const source = node.textContent ?? "";
+    try {
+      const svg = await mod.drawOne(node, source);
+      rememberDiagram(source, svg);
+    } catch (err) {
+      markDiagramFailed(node, err);
+    }
+  }
+}
+
+function markDiagramFailed(node, err) {
+  node.classList.add("failed");
+  panelNote(node, "Could not draw this diagram: " + String(err?.message ?? err).split("\n")[0].slice(0, 120));
+}
+
+/** A quiet line under the block, never a thrown error in the transcript. */
+function panelNote(node, text) {
+  if (node.nextElementSibling?.classList?.contains("mermaid-error")) return;
+  const note = document.createElement("span");
+  note.className = "mermaid-error";
+  note.textContent = text;
+  node.after(note);
+}
+
+function rememberDiagram(source, svg) {
+  const key = themeKey() + "\u0000" + source;
+  diagramEngine.cache.set(key, svg);
+  if (diagramEngine.cache.size > DIAGRAM_CACHE_MAX) diagramEngine.cache.delete(diagramEngine.cache.keys().next().value);
+}
+
+/**
+ * Called after every transcript rebuild: replay cached drawings synchronously
+ * (no flicker, no work), then watch the rest.
+ */
+function decorateTranscript() {
+  const nodes = $$("pre.mermaid", el.messages);
+  if (!nodes.length) return;
+  const key0 = themeKey();
+  const pending = [];
+  for (const node of nodes) {
+    const source = node.textContent ?? "";
+    const svg = diagramEngine.cache.get(key0 + "\u0000" + source);
+    if (svg) {
+      node.innerHTML = svg;
+      node.__mermaidSource = source; // the viewer's Source toggle needs it
+      node.classList.add("drawn");
+      continue;
+    }
+    if (source.trim().length > DIAGRAM_MAX_SOURCE) {
+      panelNote(node, "This diagram is too large to draw on the device; the source stays visible.");
+      continue;
+    }
+    pending.push(node);
+  }
+  if (!pending.length || state.busy) return; // mid-turn source is not a diagram yet
+  const io = diagramObserver();
+  for (const node of pending) io.observe(node);
+}
+
+/* code blocks: a wrapped block stays wrapped when the transcript rebuilds */
+function codeBlockKey(block) {
+  const msg = block.closest("[data-msg]");
+  const scope = msg ?? el.messages;
+  return (msg?.dataset.msg ?? "-") + ":" + [...scope.querySelectorAll(".code-block")].indexOf(block);
+}
+
+function restoreCodeBlocks(keys) {
+  if (!keys.size) return;
+  for (const block of $$(".code-block", el.messages)) {
+    if (keys.has(codeBlockKey(block))) block.classList.add("wrap");
+  }
+}
+
+/* ------------------------------------------------------------- lightbox */
+
+function openLightbox(node) {
+  if (!el.lightbox || !el.lightboxBody) return;
+  const diagram = node.matches?.("pre.mermaid.drawn");
+  el.lightboxBody.className = "lightbox-content" + (diagram ? " diagram" : "");
+  el.lightboxBody.innerHTML = "";
+  state.lightboxSource = diagram ? node.__mermaidSource ?? "" : "";
+  if (diagram) {
+    const svg = node.querySelector("svg");
+    if (!svg) return;
+    el.lightboxBody.appendChild(svg.cloneNode(true));
+  } else {
+    const img = document.createElement("img");
+    img.src = node.currentSrc || node.src;
+    img.alt = node.alt || "";
+    el.lightboxBody.appendChild(img);
+  }
+  if (el.lightboxSource) {
+    el.lightboxSource.hidden = false;
+    el.lightboxSource.textContent = "Source";
+    el.lightboxSource.dataset.mode = "svg";
+  } else {
+    el.lightboxSource.hidden = true;
+  }
+  el.lightbox.classList.add("open");
+  el.lightbox.setAttribute("aria-hidden", "false");
+  haptic(6);
+}
+
+function toggleLightboxSource() {
+  if (!el.lightboxSource || !state.lightboxSource) return;
+  const showSource = el.lightboxSource.dataset.mode !== "source";
+  el.lightboxSource.dataset.mode = showSource ? "source" : "svg";
+  el.lightboxSource.textContent = showSource ? "Diagram" : "Source";
+  el.lightboxBody.className = "lightbox-content" + (showSource ? "" : " diagram");
+  el.lightboxBody.innerHTML = "";
+  if (showSource) {
+    const pre = document.createElement("pre");
+    pre.className = "lightbox-code";
+    pre.textContent = state.lightboxSource;
+    el.lightboxBody.appendChild(pre);
+  } else {
+    const node = $$("pre.mermaid.drawn", el.messages).find((n) => (n.__mermaidSource ?? "") === state.lightboxSource);
+    const svg = node?.querySelector("svg");
+    if (svg) el.lightboxBody.appendChild(svg.cloneNode(true));
+  }
+}
+
+function closeLightbox() {
+  if (!el.lightbox?.classList.contains("open")) return;
+  el.lightbox.classList.remove("open");
+  el.lightbox.setAttribute("aria-hidden", "true");
+  el.lightboxBody.innerHTML = "";
+  state.lightboxSource = "";
+  haptic(4);
+}
+
 function renderMessages(force = false) {
   if (state.screen !== "chat") return;
 
@@ -1482,6 +1747,7 @@ function renderMessages(force = false) {
   const openTools = new Set($$(".tool-card.open", el.messages).map((n) => n.dataset.tool));
   const openReasoning = new Set($$(".reasoning.open", el.messages).map((n) => n.dataset.reasoning));
   const openActivity = new Set($$(".activity.open", el.messages).map((n) => n.dataset.activity));
+  const wrappedBlocks = new Set($$(".code-block.wrap", el.messages).map(codeBlockKey));
 
   const chunks = [];
 
@@ -1591,6 +1857,8 @@ function renderMessages(force = false) {
   for (const n of $$(".tool-card", el.messages)) if (openTools.has(n.dataset.tool)) n.classList.add("open");
   for (const n of $$(".reasoning", el.messages)) if (openReasoning.has(n.dataset.reasoning)) n.classList.add("open");
   for (const n of $$(".activity", el.messages)) if (openActivity.has(n.dataset.activity)) n.classList.add("open");
+  restoreCodeBlocks(wrappedBlocks);
+  decorateTranscript();
 
   // Only messages that arrive while the conversation is open play the entry
   // animation. A freshly opened session renders at once, with no fade.
@@ -2630,6 +2898,7 @@ function renderArtifact() {
     numbers: state.prefs.codeLineNumbers,
   });
   el.artifactBody.classList.toggle("wrap", !!state.prefs.codeWrap);
+  paintArtifactDiagrams();
   for (const b of $$("#artifact-tabs button", el.artifact)) {
     b.classList.toggle("on", b.dataset.atab === tab);
   }
@@ -2688,6 +2957,8 @@ function artifactActions() {
           attrs: "data-aact=numbers",
         })}
         ${a.kind === "html" ? sheetRow({ iconName: "refresh", title: "Reload preview", attrs: "data-aact=reload" }) : ""}
+        ${a.doc ? sheetRow({ iconName: "download", title: "Export HTML", sub: "One file, no dependencies", attrs: "data-aact=export-html" }) : ""}
+        ${a.doc ? sheetRow({ iconName: "print", title: "Print / Save as PDF", sub: "Opens the system print dialog", attrs: "data-aact=print" }) : ""}
         ${a.kind === "code" || a.kind === "diff" ? sheetRow({ iconName: "code", title: "Show code", attrs: "data-aact=tab-code" }) : ""}
         ${sheetRow({ iconName: "x", title: "Close", attrs: "data-aact=close" })}
       </div>`;
@@ -2700,6 +2971,15 @@ function artifactActions() {
         if (act === "save") {
           const name = (a.title || "artifact").replace(/[^\w.-]+/g, "-");
           downloadText(name + "." + artifactExt(a), a.code ?? a.doc ?? "", "text/plain");
+        }
+        if (act === "export-html" && a.doc) {
+          const title = a.title || documentTitleOf(a.doc);
+          const html = buildStandaloneHtml({ title, markdown: a.doc, meta: artifactSubtitle(a) });
+          downloadText(exportName(title, "html"), html, "text/html");
+        }
+        if (act === "print" && a.doc) {
+          const title = a.title || documentTitleOf(a.doc);
+          printMarkdownDoc(a.doc, { title, meta: artifactSubtitle(a) });
         }
         if (act === "wrap") {
           setPref("codeWrap", !state.prefs.codeWrap);
@@ -6119,6 +6399,13 @@ function bindEvents() {
       return;
     }
 
+    // images and drawn diagrams open in the full-screen viewer
+    const figure = e.target.closest("pre.mermaid.drawn, .files img, .md img");
+    if (figure) {
+      openLightbox(figure);
+      return;
+    }
+
     // code block controls
     const wrapBtn = e.target.closest("[data-code-wrap]");
     if (wrapBtn) {
@@ -6338,6 +6625,20 @@ function bindEvents() {
   el.sheetClose.addEventListener("click", () => closeSheet(false));
   el.sheetBack.addEventListener("click", () => closeSheet(false));
 
+  // image / diagram viewer
+  el.lightbox?.addEventListener("click", (e) => {
+    if (e.target === el.lightbox) closeLightbox();
+  });
+  el.lightboxClose?.addEventListener("click", () => closeLightbox());
+  el.lightboxSource?.addEventListener("click", () => toggleLightboxSource());
+  el.artifactBody?.addEventListener("click", (e) => {
+    const img = e.target.closest("img");
+    if (img) openLightbox(img);
+  });
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && el.lightbox?.classList.contains("open")) closeLightbox();
+  });
+
   // settings
   $("#open-settings").addEventListener("click", openSettings);
   el.connDot.addEventListener("click", () => {
@@ -6365,7 +6666,8 @@ function bindEvents() {
     const side = $("#sidebar");
     if (side && !side.hidden && side.classList.contains("open")) {
       sidebarClose();
-    } else if (state.sheetOpen || state.sheetClosing) closeSheet(true);
+    } else if (el.lightbox?.classList.contains("open")) closeLightbox();
+    else if (state.sheetOpen || state.sheetClosing) closeSheet(true);
     else if (state.artifact || state.artifactClosing) closeArtifact(true);
     else if (state.chatOpen) closeChat(true);
   });

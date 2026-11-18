@@ -3,7 +3,7 @@
 **A fast, mobile-first web client for [OpenCode](https://opencode.ai) running in Termux.**
 
 [![MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![No dependencies](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](package.json)
+[![No runtime dependencies](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](package.json)
 [![OpenCode](https://img.shields.io/badge/opencode-v2.3-6b7280.svg)](https://opencode.ai/docs/api)
 [![PWA](https://img.shields.io/badge/PWA-installable-5a0fc8.svg)](manifest.webmanifest)
 
@@ -106,7 +106,21 @@ No phone, no server, no account: **[open the demo](https://shivapal12395-droid.g
 - **PWA** - Add to Home Screen, offline shell, safe-area aware.
 - **Themes** - a dark system theme resolves to true-black AMOLED (`#000`, OLED pixels off); Dark (`#0b0f14`), Light and Auto are one tap away in Settings.
 - **Deep links** — `?base=…&secret=…` opens straight into the session list, no typing.
-- **Zero dependencies** — vanilla HTML, CSS and JS. No bundler, no framework.
+- **Zero runtime dependencies** — vanilla HTML, CSS and JS. The chat's markdown and diagram engines are pre-built files in `assets/vendor/` (`npm run vendor` rebuilds them; the app itself has no build step). See [docs/THIRD-PARTY.md](docs/THIRD-PARTY.md).
+
+### Rich answers
+
+Agent replies are documents, not plain bubbles: headings, tables, nested and
+task lists, footnotes, GitHub-style `NOTE` / `TIP` / `WARNING` callouts,
+highlighted code with a language chip, wrap and full-screen open, KaTeX math,
+and Mermaid diagrams drawn lazily only when a diagram scrolls into view. Images
+and diagrams open in a full-screen viewer with a source toggle.
+
+Any answer can become a file: **Export HTML** writes one self-contained document
+(dark on screen, a light print sheet on paper, MathML math so it needs no font
+pack), and **Print / Save as PDF** hands the same document to the system print
+dialog. Both are built from the sanitised render, and none of it needs the
+server.
 
 ## How the chat is put together
 

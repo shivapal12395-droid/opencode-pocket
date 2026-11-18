@@ -7,8 +7,31 @@
   "scripts": {
     "start": "node server.mjs",
     "start:lan": "node server.mjs --port 8099 --host 0.0.0.0",
+    "vendor": "node tools/vendor.mjs",
     "icons": "python tools/make_icons.py"
   },
-  "keywords": ["opencode", "termux", "android", "pwa", "coding-agent"],
-  "license": "MIT"
+  "keywords": [
+    "opencode",
+    "termux",
+    "android",
+    "pwa",
+    "coding-agent"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "dompurify": "^3.4.18",
+    "esbuild": "^0.28.2",
+    "highlight.js": "^11.12.0",
+    "katex": "^0.19.1",
+    "markdown-it": "^15.0.3",
+    "markdown-it-anchor": "^10.1.0",
+    "markdown-it-attrs": "^5.0.1",
+    "markdown-it-footnote": "^4.0.0",
+    "markdown-it-front-matter": "^0.2.4",
+    "markdown-it-github-alerts": "^1.0.1",
+    "markdown-it-task-lists": "^2.1.1",
+    "markdown-it-texmath": "^1.0.0",
+    "mermaid": "^12.3.0",
+    "playwright-core": "^1.65.1"
+  }
 }

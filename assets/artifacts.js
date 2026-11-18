@@ -192,11 +192,9 @@ export function artifactBodyHtml(a, { tab = "preview", wrap = false, numbers = t
   }
 
   if (a.kind === "diagram") {
-    return `<div class="artifact-note">Diagram source. A Mermaid engine is not bundled with Pocket, so this is the
-      diagram's text rather than a rendered image.</div>${codeHtml(a.code ?? "", a.language, {
-      wrap,
-      numbers,
-    })}`;
+    // Drawn by the transcript's Mermaid engine once this panel paints; the
+    // source stays as the fallback if the diagram does not parse.
+    return `<pre class="mermaid artifact-diagram">${escapeHtml(a.code ?? "")}</pre>`;
   }
 
   if (a.kind === "image" && a.src) {

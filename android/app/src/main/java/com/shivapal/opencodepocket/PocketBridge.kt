@@ -11,6 +11,12 @@ import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import android.print.PrintAttributes
+import android.print.PrintManager
+import android.view.View
+import android.view.ViewGroup
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.core.content.ContextCompat
 import org.json.JSONObject
@@ -25,6 +31,10 @@ class PocketBridge(private val activity: MainActivity) {
     private val prefs by lazy {
         activity.getSharedPreferences("pocket", Context.MODE_PRIVATE)
     }
+
+    /** The offscreen WebView a print job is reading from. Held so the system
+     *  print service can paginate it after the JS call has returned. */
+    private var printView: WebView? = null
 
     @android.webkit.JavascriptInterface
     fun isNative(): Boolean = true
@@ -97,9 +107,57 @@ class PocketBridge(private val activity: MainActivity) {
         }
     }
 
+    /**
+     * Hand a self-contained document to the system print dialog. "Save as PDF"
+     * in that dialog is the PDF export; there is no second renderer here and no
+     * silent failure — a refused job comes back as a toast.
+     *
+     * The WebView has to be attached and laid out: `createPrintDocumentAdapter`
+     * paginates what the view actually renders, and a detached view prints one
+     * blank page. It is placed off-screen at A4 width and kept alive until the
+     * next print, because the adapter is still reading it when this returns.
+     */
     @android.webkit.JavascriptInterface
-    fun shareText(text: String) {
-        val intent = Intent(Intent.ACTION_SEND).apply {
+    fun printHtml(html: String, jobName: String): Boolean {
+        activity.runOnUiThread {
+            try {
+                val root = activity.findViewById<ViewGroup>(android.R.id.content)
+                printView?.let { old -> (old.parent as? ViewGroup)?.removeView(old) }
+                val web = WebView(activity)
+                web.settings.javaScriptEnabled = false // the document is static
+                web.setBackgroundColor(android.graphics.Color.WHITE)
+                web.isClickable = false
+                web.alpha = 0f
+                web.translationY = 100_000f // laid out, never seen
+                web.webViewClient = object : WebViewClient() {
+                    override fun onPageFinished(view: WebView, url: String?) {
+                        view.post {
+                            try {
+                                val manager = activity.getSystemService(Context.PRINT_SERVICE) as PrintManager
+                                val adapter = view.createPrintDocumentAdapter(jobName.take(60).ifBlank { "OpenCode Pocket" })
+                                val attrs = PrintAttributes.Builder()
+                                    .setMediaSize(PrintAttributes.MediaSize.ISO_A4)
+                                    .setMinMargins(PrintAttributes.Margins.NO_MARGINS)
+                                    .build()
+                                manager.print(jobName.take(60).ifBlank { "OpenCode Pocket" }, adapter, attrs)
+                            } catch (e: Exception) {
+                                toast("Could not print: ${e.message}")
+                            }
+                        }
+                    }
+                }
+                root?.addView(web, ViewGroup.LayoutParams(794, 1123))
+                printView = web
+                web.loadDataWithBaseURL(null, html, "text/html", "utf-8", null)
+            } catch (e: Exception) {
+                toast("Could not print: ${e.message}")
+            }
+        }
+        return true
+    }
+
+    @android.webkit.JavascriptInterface
+    fun shareText(text: String) {        val intent = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
             putExtra(Intent.EXTRA_TEXT, text)
         }
