@@ -17,9 +17,10 @@ Date: 2026-11-18. Server: embedded `runtime-v2.3.0-r1`.
 | `test/suite-11.cjs` | rich transcript, streaming, exports, print (14 checks) | 14 passed, 0 failed |
 | `test/suite-12.cjs` | **new** — finish reasons, connection loss, ambiguous prompts, Thinking/Working, Stop, paging, transport retries (13 checks) | 13 passed, 0 failed |
 | `test/device-live.cjs` | **new** — the installed APK's own WebView over CDP, against the real daemon: identity, a real turn, Stop, a real backup, daemon kill → banner → restart recovery | 5 passed, 0 failed |
-| `test/device-reinstall.cjs` | **new** — real `adb uninstall` + `install`, fresh-install offer, restore from the system file picker, original ids, transcript opens | 9 passed, 0 failed |
+| `test/device-reinstall.cjs` | **new** — real `adb uninstall` + `install`, fresh-install offer, restore from the system file picker, original ids, transcript opens. The engine bundle is put back in place on purpose, so this suite never depends on the phone's network | 9 passed, 0 failed |
+| `test/device-fresh-install.cjs` | **new** — the real first run: uninstall, install, and let the app **download the engine from the repo's GitHub release itself** (progress, SHA, unpack, daemon), then offer and restore the backup | 6 passed, 0 failed |
 
-Total: **140 web checks + 14 device checks, 0 failures.**
+Total: **140 web checks + 20 device checks, 0 failures.**
 
 Reproduce:
 
@@ -30,6 +31,7 @@ node test/suite-1.cjs … test/suite-12.cjs
 adb forward tcp:9223 localabstract:webview_devtools_remote_<app pid>
 node test/device-live.cjs                   # app running, real daemon
 node test/device-reinstall.cjs              # destructive: uninstalls the app
+node test/device-fresh-install.cjs          # destructive: uninstall + a real 124 MB engine download
 ```
 
 ---
@@ -131,6 +133,14 @@ Earlier in the same work, the pre-fix path reproduced the bug exactly: restore r
 `{"ok":true,"files":81}` and the app still showed the old data until the daemon was
 restarted by hand.
 
+**Evidence, first run (`device-fresh-install`).** The same cycle with **no engine on the
+device at all**, so the app had to fetch it from the repo's release: 119 MB down in
+130 s (progress sampled every 2 s: 0.1 → 7.8 → 17.0 → 34.4 → 54.3 → 79.0 → 101.2 MB),
+`downloaded 124541879 bytes` → `SHA verified` → `extract exit=0` → `chmod exit=0` →
+`daemon ready on 4098`. The fresh install then showed **0 sessions** and offered the
+backup, and the picker restore brought back **all 3 original ids**. The log after the
+restore shows the fix working: `killed daemons: 13991`, then a new daemon on 4098.
+
 ## 4. Thinking vs Working
 
 **Reproduction.** Watch the header during a turn.
@@ -186,6 +196,9 @@ New, in the repo:
 - `test/device-reinstall.cjs` — the destructive cycle: safety copy, backup, uninstall,
   reinstall, fresh-install behaviour, restore via the system picker, ids, transcript
   (9 checks).
+- `test/device-fresh-install.cjs` — first run with no engine on disk: the app's own
+  download from the repo release, SHA verification, unpack, daemon start, then the
+  backup offer and restore (6 checks).
 - Demo fixtures for all of it in `assets/mock.js` (`token limit`, `cut off`,
   `go offline`, `unreachable`, `ses_demo_long` with 360 messages, paged `messages()`).
 
