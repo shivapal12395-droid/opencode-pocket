@@ -268,19 +268,18 @@ const MESSAGES = {
 
 const MODELS = [
   { providerID: "opencode", id: "big-pickle", name: "Big Pickle", type: "chat", enabled: true, variants: [], limit: { context: 1_000_000, output: 384_000 }, status: "active" },
-  { providerID: "opencode", id: "deepseek-v4.1-flash-free", name: "DeepSeek V4.1 Flash Free", type: "chat", enabled: true, variants: [], limit: { context: 1_000_000, output: 384_000 }, status: "active" },
   {
-    providerID: "anthropic",
-    id: "claude-opus-4-6",
-    name: "Claude Opus 4.6",
+    providerID: "opencode",
+    id: "deepseek-v4.1-flash-free",
+    name: "DeepSeek V4.1 Flash Free",
     type: "chat",
     enabled: true,
-    variants: [{ id: "low" }, { id: "high" }, { id: "max" }],
-    limit: { context: 500_000, output: 64_000 },
+    variants: [],
+    limit: { context: 1_000_000, output: 384_000 },
     status: "active",
   },
+  { providerID: "opencode", id: "glm-5.3-flash-free", name: "GLM 5.3 Flash Free", type: "chat", enabled: true, variants: [], limit: { context: 200_000, output: 65_000 }, status: "active" },
   { providerID: "openai", id: "gpt-6-sol", name: "GPT-6 Sol", type: "chat", enabled: true, variants: [], limit: { context: 400_000, output: 32_000 }, status: "active" },
-  { providerID: "google", id: "gemini-4-hydrogen", name: "Gemini 4 Hydrogen", type: "chat", enabled: true, variants: [], limit: { context: 1_049_000, output: 65_000 }, status: "active" },
 ];
 
 const AGENTS = [
@@ -935,7 +934,13 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
   }
 
   async providers() {
-    return [{ id: "opencode", name: "OpenCode", activation: "enabled" }, { id: "anthropic", name: "Anthropic", activation: "auto" }, { id: "openai", name: "OpenAI", activation: "auto" }, { id: "google", name: "Google", activation: "auto" }, { id: "ollama", name: "Ollama", activation: "disabled" }];
+    // Real servers list only what they can run: OpenCode's free catalog plus
+    // anything with a saved credential. Anthropic and Google stay unconnected
+    // in the demo on purpose.
+    return [
+      { id: "opencode", name: "OpenCode", activation: "enabled" },
+      { id: "openai", name: "OpenAI", activation: "auto" },
+    ];
   }
 
   /* ---- provider connections and credentials (demo doubles) ---- */

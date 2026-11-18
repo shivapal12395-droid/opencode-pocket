@@ -3133,33 +3133,48 @@ async function openProviderCatalog() {
     kind: "catalog",
     title: "Provider catalog",
     body: async (root) => {
-      root.innerHTML = '<p class="sheet-note">Loading models.dev catalog…</p>';
+      root.innerHTML = '<p class="sheet-note">Loading models.dev catalog...</p>';
       let catalog;
+      let avail = { active: new Set(), byId: new Map() };
       try {
-        catalog = await providerCatalog();
+        [catalog, avail] = await Promise.all([providerCatalog(), providerAvailability()]);
       } catch {
         root.innerHTML = '<p class="sheet-note">Could not load the provider catalog (offline). Saved connections still work.</p>';
         return;
       }
       const ids = Object.keys(catalog).sort((a, b) => {
-        const fa = freeModels(catalog[a]).length, fb = freeModels(catalog[b]).length;
+        const ca = avail.active.has(a) ? 1 : 0;
+        const cb = avail.active.has(b) ? 1 : 0;
+        if (ca !== cb) return cb - ca; // connected providers first
+        const fa = freeModels(catalog[a]).length;
+        const fb = freeModels(catalog[b]).length;
         return fb - fa || catalog[a].name.localeCompare(catalog[b].name);
       });
+      // Cards report what this server can reach, not what exists in the world.
       const card = (id) => {
         const p = catalog[id];
         const free = freeModels(p);
         const color = PROVIDER_COLORS[id] ?? "#9aa0a6";
-        return `<button class="catalog-card" data-catalog="${escapeHtml(id)}">
-          <img src="https://models.dev/logos/${encodeURIComponent(id)}.svg" alt="" style="color:${escapeHtml(color)}" />
-          <span class="catalog-text"><span class="catalog-name">${escapeHtml(p.name ?? id)}</span>
-          <span class="catalog-sub">${free.length ? free.length + " free model" + (free.length === 1 ? "" : "s") : (Object.keys(p.models ?? {}).length + " models")}</span></span>
-          ${free.length ? '<span class="catalog-free">FREE</span>' : ""}
-        </button>`;
+        const ready = avail.active.has(id);
+        const live = avail.models.filter((m) => m.providerID === id);
+        const saved = !ready && avail.configured.has(id);
+        const sub = ready
+          ? live.length + " model" + (live.length === 1 ? "" : "s") + " ready on this server"
+          : saved
+            ? "Saved, but the server serves no models for it"
+            : "Needs a key or sign-in";
+        return "<button class=\"catalog-card" + (ready ? " connected" : "") + "\" data-catalog=\"" + escapeHtml(id) + "\">" +
+          "<img src=\"https://models.dev/logos/" + encodeURIComponent(id) + ".svg\" alt=\"\" style=\"color:" + escapeHtml(color) + "\" />" +
+          "<span class=\"catalog-text\"><span class=\"catalog-name\">" + escapeHtml(p.name ?? id) + "</span>" +
+          "<span class=\"catalog-sub\">" + escapeHtml(sub) + "</span></span>" +
+          (ready ? "<span class=\"catalog-free\">READY</span>" : free.length ? "<span class=\"catalog-free ghost\">FREE</span>" : "") +
+          "</button>";
       };
-      root.innerHTML = `<div class="sheet-search"><div class="search-box">${icon("search")}
-          <input class="search-input" id="catalog-search" placeholder="Search providers" autocomplete="off" /></div></div>
-        <div id="catalog-list" class="catalog-list">${ids.map(card).join("")}</div>
-        <div id="catalog-models" class="catalog-models" hidden></div>`;
+      root.innerHTML = "<div class=\"sheet-search\"><div class=\"search-box\">" + icon("search") +
+        "<input class=\"search-input\" id=\"catalog-search\" placeholder=\"Search providers\" autocomplete=\"off\" /></div></div>" +
+        "<p class=\"sheet-note\" style=\"margin:8px 2px 10px\">Models appear once the provider is connected. READY means this server can run it now.</p>" +
+        "<div id=\"catalog-list\" class=\"catalog-list\">" + ids.map(card).join("") + "</div>" +
+        "<div id=\"catalog-models\" class=\"catalog-models\" hidden></div>";
       const list = $("#catalog-list", root);
       const models = $("#catalog-models", root);
       $("#catalog-search", root).addEventListener("input", (e) => {
@@ -3169,24 +3184,64 @@ async function openProviderCatalog() {
       list.addEventListener("click", (e) => {
         const btn = e.target.closest("[data-catalog]");
         if (!btn) return;
-        const p = catalog[btn.dataset.catalog];
-        const free = freeModels(p);
-        const rows = (free.length ? free : Object.entries(p.models ?? {}).slice(0, 20))
-          .map(([id, m]) => `<button class="sheet-item" data-catalog-model="${escapeHtml(btn.dataset.catalog + "/" + id)}">
-            <span class="si-text"><span class="si-title">${escapeHtml(m.name ?? id)}</span>
-            <span class="si-sub">${escapeHtml(id)}${m.limit?.context ? " · " + Math.round(m.limit.context / 1000) + "k ctx" : ""}</span></span></button>`)
+        const id = btn.dataset.catalog;
+        const p = catalog[id];
+        const name = p.name ?? id;
+        // Not ready: offer the real connection flow instead of a model the
+        // server cannot serve.
+        if (!avail.active.has(id)) {
+          const hasFlow = !!avail.byId.get(id);
+          models.hidden = false;
+          models.innerHTML =
+            "<p class=\"sheet-note\">" + escapeHtml(name) + (avail.configured.has(id)
+              ? " has a saved key, but this server serves no models for it. Reconnect or check the key."
+              : " is not connected, so its models are not available to this server yet.") + "</p>" +
+            (hasFlow
+              ? "<button class=\"btn btn-primary btn-block\" data-catalog-connect=\"" + escapeHtml(id) + "\">Connect " + escapeHtml(name) + "</button>"
+              : "<p class=\"sheet-note\">This provider is configured outside Pocket - add its key where OpenCode runs.</p>");
+          models.scrollIntoView({ behavior: "smooth", block: "nearest" });
+          return;
+        }
+        // Ready: list the models the server actually handed out, not the
+        // catalog's idea of the provider.
+        const rows = avail.models
+          .filter((m) => m.providerID === id)
+          .map((m) =>
+            "<button class=\"sheet-item\" data-catalog-model=\"" + escapeHtml(id + "/" + m.id) + "\">" +
+            "<span class=\"si-text\"><span class=\"si-title\">" + escapeHtml(m.name ?? m.id) + "</span>" +
+            "<span class=\"si-sub\">" + escapeHtml(m.id) + (m.limit?.context ? " · " + Math.round(m.limit.context / 1000) + "k ctx" : "") + "</span></span></button>")
           .join("");
         models.hidden = false;
-        models.innerHTML = `<p class="sheet-note">${escapeHtml(p.name ?? btn.dataset.catalog)} · ${free.length ? "free models" : "models"}</p>${rows}`;
+        models.innerHTML = "<p class=\"sheet-note\">" + escapeHtml(name) + " · " + avail.models.filter((m) => m.providerID === id).length + " models on this server</p>" + rows;
         models.scrollIntoView({ behavior: "smooth", block: "nearest" });
       });
       models.addEventListener("click", async (e) => {
+        const connect = e.target.closest("[data-catalog-connect]");
+        if (connect) {
+          closeSheet();
+          setTimeout(() => openAuthSheet(connect.dataset.catalogConnect), 200);
+          return;
+        }
         const btn = e.target.closest("[data-catalog-model]");
         if (!btn) return;
         const ref = btn.dataset.catalogModel;
+        // Only models the server actually lists may become the default.
+        let live = [];
+        try {
+          live = (await ensureModels()) ?? [];
+        } catch (_) {
+          /* fall through with an empty list */
+        }
+        const [prov, ...rest] = ref.split("/");
+        const wantID = rest.join("/");
+        const ok = live.some((m) => m.providerID === prov && m.id === wantID);
+        if (!ok) {
+          toast("Connect " + prov + " first - its models are not on this server");
+          return;
+        }
         store.set("defaultModel", ref);
         if (state.session) await state.api.switchModel(state.session.id, ref).catch(() => {});
-        toast(`Default model · ${ref}`);
+        toast("Default model · " + ref);
         closeSheet();
       });
     },
@@ -3680,10 +3735,10 @@ exit</pre>
 
 /* -------------------------------------------------------- connections */
 
-async function openAuthSheet() {
+async function openAuthSheet(focus = null) {
   openSheet({
     kind: "auth",
-    title: "Connections",
+    title: focus ? "Connect" : "Connections",
     body: async (root) => {
       root.innerHTML = '<p class="sheet-note">Loading providers and saved credentials…</p>';
       let list = [];
@@ -3697,6 +3752,17 @@ async function openAuthSheet() {
       if (!list.length) {
         root.innerHTML = '<p class="sheet-note">This server reports no connectable integrations. Its providers may use keys from the host environment.</p>';
         return;
+      }
+      // Opened from the catalog for one provider: show only that provider's
+      // methods, so the path from "Needs a key" to "connected" is one tap.
+      if (focus) {
+        const one = list.find((x) => x.id === focus);
+        if (!one) {
+          root.innerHTML = '<p class="sheet-note">This provider is not connectable from this server. Add its key where OpenCode runs.</p>';
+          return;
+        }
+        list = [one];
+        el.sheetTitle.textContent = "Connect " + (one.name || one.id);
       }
       const credById = new Map(creds.map((c) => [c.id, c]));
       const byIntegration = new Map();
@@ -3837,6 +3903,7 @@ async function openAuthSheet() {
                   await state.api.connectKey(integration.id, key, { label, answer: Object.keys(values).length > 1 ? values : null });
                   toast("Connected");
                   closeSheet();
+                  await refreshModelsAfterConnect(integration.name || integration.id);
                   setTimeout(() => openAuthSheet(), 240);
                 } catch (err) {
                   handleError(err, "Could not connect");
@@ -3874,6 +3941,7 @@ async function openAuthSheet() {
                   try {
                     await state.api.completeOAuth(integration.id, aid, code || null);
                     toast("Signed in");
+                    await refreshModelsAfterConnect(integration.name || integration.id);
                     closeSheet();
                     setTimeout(() => openAuthSheet(), 240);
                   } catch (err) {
@@ -4036,9 +4104,8 @@ function openAccountSheet() {
           fail(data?.error?.message || "Approval finished but the server reports no connection. Try again.");
           return;
         }
-        state.models = null;
-        ensureModels().catch(() => {});
         haptic(12);
+        refreshModelsAfterConnect("OpenCode account").catch(() => {});
         toast("Signed in to OpenCode");
         signedOut();
       };
@@ -4387,30 +4454,76 @@ function openProvidersSheet() {
     title: "Providers",
     body: async (root) => {
       root.innerHTML = '<p class="sheet-note">Loading...</p>';
-      let providers = [];
+      let avail;
       try {
-        providers = await state.api.providers({ directory: workspaceDir() });
+        avail = await providerAvailability();
       } catch (err) {
         root.innerHTML = '<p class="sheet-note">' + escapeHtml(err.message || "Could not load providers") + "</p>";
         return;
       }
-      if (!providers.length) {
-        root.innerHTML = '<p class="sheet-note">No providers configured.</p>';
+      // Only providers this server can actually run: those whose models it
+      // hands out, plus any it has a saved key/sign-in for. The catalog holds
+      // the full world; this list holds what is reachable.
+      const byModel = new Map();
+      for (const m of avail.models) {
+        if (!byModel.has(m.providerID)) byModel.set(m.providerID, 0);
+        byModel.set(m.providerID, byModel.get(m.providerID) + 1);
+      }
+      const named = new Map();
+      for (const p of avail.providers) if (p?.id) named.set(p.id, p);
+      const rows = [];
+      const seen = new Set();
+      for (const id of avail.active) {
+        seen.add(id);
+        const it = avail.byId.get(id);
+        rows.push({
+          id,
+          name: named.get(id)?.name || it?.name || id,
+          state: "ready",
+          how: byModel.get(id) + " model" + (byModel.get(id) === 1 ? "" : "s"),
+        });
+      }
+      for (const id of avail.configured) {
+        if (seen.has(id)) continue;
+        seen.add(id);
+        const it = avail.byId.get(id);
+        rows.push({
+          id,
+          name: named.get(id)?.name || it?.name || id,
+          state: "silent",
+          how: "saved, no models served",
+        });
+      }
+      if (!rows.length) {
+        root.innerHTML =
+          '<p class="sheet-note">No provider is connected yet, so this server has no models to run. Add a key or sign in to one.</p>' +
+          '<button class="btn btn-primary btn-block" data-provider-connect style="margin-top:12px">Connect a provider</button>';
+        root.addEventListener("click", (e) => {
+          if (!e.target.closest("[data-provider-connect]")) return;
+          closeSheet();
+          setTimeout(() => openAuthSheet(), 200);
+        });
         return;
       }
-      const order = { enabled: 0, auto: 1, disabled: 2 };
       root.innerHTML =
-        '<p class="sheet-note">Which model providers this OpenCode can reach. Keys are configured on the host.</p><div class="sheet-list">' +
-        [...providers]
-          .sort((a, b) => (order[a.activation] ?? 9) - (order[b.activation] ?? 9))
+        '<p class="sheet-note">Providers this OpenCode can run right now, with how many models it serves for each. A provider appears here after its key or sign-in is added.</p><div class="sheet-list">' +
+        rows
           .map(
             (p) =>
-              '<div class="sheet-item"><span class="si-icon">' + icon("plug") + "</span>" +
-              '<span class="si-text"><span class="si-title">' + escapeHtml(p.name || p.id) + "</span>" +
-              '<span class="si-sub">' + escapeHtml(p.activation) + "</span></span></div>"
+              '<div class="sheet-item"' + (p.state === "silent" ? ' data-silent="1"' : "") + '><span class="si-icon">' + icon("plug") + "</span>" +
+              '<span class="si-text"><span class="si-title">' + escapeHtml(p.name) + "</span>" +
+              '<span class="si-sub">' + escapeHtml(p.id) + " · " + escapeHtml(String(p.how)) + "</span></span>" +
+              (p.state === "silent" ? '<span class="si-sub">retry</span>' : "") +
+              "</div>"
           )
           .join("") +
-        "</div>";
+        "</div>" +
+        '<div class="prefs-foot"><button class="btn btn-ghost" data-provider-connect>Connect another provider</button></div>';
+      root.addEventListener("click", (e) => {
+        if (!e.target.closest("[data-provider-connect]")) return;
+        closeSheet();
+        setTimeout(() => openAuthSheet(), 200);
+      });
     },
   });
 }
@@ -4589,6 +4702,61 @@ async function ensureCommands() {
   return state.commands;
 }
 
+/**
+ * What this server can actually reach right now.
+ *
+ * `active` is the truth and comes from the live model list: a provider is only
+ * usable if the server hands out models for it. That endpoint is what a key or
+ * sign-in changes, and it is empty for a provider that is configured but not
+ * serving anything. `configured` is the softer signal (a provider row, a saved
+ * credential, a live connection) used to explain a saved-but-silent provider.
+ * The models.dev catalog knows every provider in the world; a model is only
+ * selectable when its provider is in `active`.
+ */
+async function providerAvailability() {
+  const safe = (p) => p.catch(() => []);
+  const [models, providers, integrations, creds] = await Promise.all([
+    safe(ensureModels()),
+    safe(state.api.providers({ directory: workspaceDir() })),
+    safe(state.api.integrations()),
+    safe(state.api.credentials()),
+  ]);
+  const active = new Set();
+  for (const m of models ?? []) if (m?.providerID && m.enabled !== false) active.add(m.providerID);
+  const configured = new Set();
+  for (const p of providers ?? []) if (p?.id) configured.add(p.id);
+  for (const c of creds ?? []) if (c?.integrationID) configured.add(c.integrationID);
+  for (const it of integrations ?? []) if ((it?.connections ?? []).length) configured.add(it.id);
+  const byId = new Map();
+  for (const it of integrations ?? []) byId.set(it.id, it);
+  return {
+    active,
+    configured,
+    providers: providers ?? [],
+    integrations: integrations ?? [],
+    models: models ?? [],
+    byId,
+  };
+}
+
+/** After a key or login lands, the model list changes on the server. */
+async function refreshModelsAfterConnect(label) {
+  state.models = null;
+  let models = [];
+  try {
+    models = (await ensureModels()) ?? [];
+  } catch (_) {
+    return;
+  }
+  const providers = new Set(models.map((m) => m.providerID));
+  toast(
+    label
+      ? `${label} connected · ${providers.size} provider${providers.size === 1 ? "" : "s"}, ${models.length} models`
+      : `${models.length} models available`
+  );
+  setChatHeader();
+}
+
 async function openModelSheet() {
   if (!state.session) return needsSession("Model", "the model and its variants are chosen per session.");
   let models = [];
@@ -4604,9 +4772,12 @@ async function openModelSheet() {
   openSheet({
     title: "Model",
     body: (root) => {
+      const providers = new Set(list.map((m) => m.providerID));
       root.innerHTML = `
         <div class="sheet-search"><div class="search-box">${icon("search")}<input class="search-input" id="model-search" placeholder="Search ${list.length} models" autocomplete="off"></div></div>
-        <div class="sheet-list" id="model-list"></div>`;
+        <p class="sheet-note">${list.length} models from ${providers.size} connected provider${providers.size === 1 ? "" : "s"}. Models from providers without a key are not listed.</p>
+        <div class="sheet-list" id="model-list"></div>
+        <div class="prefs-foot"><button class="btn btn-ghost" id="model-connect">Connect a provider</button></div>`;
       const input = $("#model-search", root);
       const listEl = $("#model-list", root);
       const currentKey = current ? `${current.providerID}/${current.id}` : null;
@@ -4650,6 +4821,10 @@ async function openModelSheet() {
         query = input.value.trim();
         cap = 60;
         paint();
+      });
+      root.querySelector("#model-connect")?.addEventListener("click", () => {
+        closeSheet();
+        setTimeout(() => openAuthSheet(), 200);
       });
       listEl.addEventListener("click", async (e) => {
         if (e.target.closest("[data-more-models]")) {

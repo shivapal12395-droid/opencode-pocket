@@ -85,7 +85,7 @@ below is judged by "can I do it from a phone with this UI".
 
 | Feature | Official | Pocket |
 | --- | --- | --- |
-| Model list + picker | All providers, search, reasoning variant (`#high`) | **yes** |
+| Model list + picker | All providers, search, reasoning variant (`#high`) | **yes** - only providers this server serves models for; a provider without a key offers its connect flow instead of its models |
 | Switch model mid-session | yes | **yes** |
 | Agent picker | build / plan / general / explore + custom (`Shift+Tab` cycles) | **yes** |
 | Skills | `SKILL.md` discovery, `/skills`, load by ID, `@skill-id` | **yes** (list + activate) |
@@ -236,7 +236,8 @@ MCP write paths and the task checklist.
 | Explicit deletion | **yes** - server delete removes the local copy too; "Delete local copy" is separate and confirmed |
 | Export / import | **yes** - versioned JSON backup including messages |
 | Encrypted backup | **no** - the export is plain JSON, protected only by where the user stores it |
-| Provider catalog | **yes** - live models.dev catalog (324 providers at the time of writing), brand-coloured logos, search, free-model counts, Big Pickle listed |
+| Provider catalog | **yes** - live models.dev catalog (324 providers at the time of writing), brand-coloured logos, search; a card is READY with the server's real model count only when that provider's models are actually being served, and an unconnected provider offers its connect flow instead of model rows |
+| Providers sheet | **yes** - lists the providers this server can run, each with the number of models it serves; a saved-but-silent provider says so. Demo mode mirrors this (OpenCode + OpenAI reachable, Anthropic not) |
 | Custom provider | **no** - v2.3.0's `PATCH /api/experimental/config` only accepts `shell`; providers must be added to `opencode.jsonc` on the server |
 | Custom MCP | **yes** - add remote (URL/headers) and local (command/env) servers via `PUT /api/experimental/mcp/{server}` |
 | Commands | **yes** - server catalog in a searchable palette; action commands (`/new`, `/clear`, `/models`, `/agents`, `/export`, `/help`) run in-app, everything else is sent to the server unchanged |

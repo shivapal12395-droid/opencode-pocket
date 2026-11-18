@@ -46,8 +46,41 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     await page.click('[data-catalog="opencode"]');
     await page.waitForSelector("#catalog-models .sheet-item", { timeout: 6000 });
     const txt = await page.$eval("#catalog-models", (n) => n.textContent);
-    assert(/Big Pickle/i.test(txt) && /free models/i.test(txt), txt.slice(0, 80));
-    return "big-pickle listed as free";
+    assert(/Big Pickle/i.test(txt) && /models on this server/i.test(txt), txt.slice(0, 80));
+    return "big-pickle listed from the live model list";
+  });
+
+  await test("Unconnected provider offers connect, not models", async () => {
+    // A catalog of the world is not a list of what this server can run. Tapping
+    // an unconnected provider must not hand out model rows or change the model.
+    await page.fill("#catalog-search", "anthropic");
+    await sleep(300);
+    const before = await page.$eval("#chip-model span", (n) => n.textContent.trim());
+    const sub = await page.$eval('[data-catalog="anthropic"] .catalog-sub', (n) => n.textContent.trim());
+    assert(/Needs a key/.test(sub), "card sub=" + sub);
+    await page.click('[data-catalog="anthropic"]');
+    await sleep(400);
+    const panel = await page.evaluate(() => ({
+      connect: document.querySelector("[data-catalog-connect]")?.textContent?.trim() ?? "",
+      modelRows: document.querySelectorAll("#catalog-models [data-catalog-model]").length,
+    }));
+    assert(/Connect Anthropic/i.test(panel.connect), "connect button=" + panel.connect);
+    assert(panel.modelRows === 0, "leaked model rows: " + panel.modelRows);
+    await page.click("[data-catalog-connect]");
+    await sleep(900);
+    const sheet = await page.evaluate(() => ({
+      title: document.querySelector("#sheet-title")?.textContent?.trim() ?? "",
+      cards: [...document.querySelectorAll(".auth-provider")].map((n) =>
+        n.querySelector(".auth-provider-head .si-title")?.textContent?.trim() ?? ""
+      ),
+    }));
+    assert(/Connect/i.test(sheet.title), "sheet=" + sheet.title);
+    assert(sheet.cards.length === 1 && /Anthropic/i.test(sheet.cards[0]), "providers=" + JSON.stringify(sheet.cards));
+    await page.evaluate(() => document.querySelector("#sheet-close")?.click());
+    await sleep(300);
+    const after = await page.$eval("#chip-model span", (n) => n.textContent.trim());
+    assert(before === after, "model changed " + before + " -> " + after);
+    return "connect offered, model unchanged";
   });
 
   console.log("\n================ FEATURE TEST REPORT 5 ================");
