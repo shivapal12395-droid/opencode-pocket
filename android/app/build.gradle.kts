@@ -16,8 +16,8 @@ android {
         // the bundled proot runs from the native library directory, which is
         // executable regardless of targetSdk.
         targetSdk = 28
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.1.0"
 
         externalNativeBuild {
             cmake {
