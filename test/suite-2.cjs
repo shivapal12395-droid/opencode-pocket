@@ -230,14 +230,14 @@ fs.writeFileSync(SHOT, PNG);
   /* ------------------------------------------------------------- mention */
   await test("@ mention sheet", async () => {
     await page.click("#btn-mention");
-    await page.waitForSelector("#mention-list .sheet-item[data-mention]", { timeout: 8000 });
-    const initialRows = await page.$$eval("#mention-list .sheet-item[data-mention]", (x) => x.length);
+    await page.waitForSelector("#mention-list .sheet-item[data-mention-kind='file']", { timeout: 8000 });
+    const initialRows = await page.$$eval("#mention-list .sheet-item[data-mention-kind='file']", (x) => x.length);
     assert(initialRows >= 3, "initial rows=" + initialRows);
     await page.fill("#mention-search", "session");
     await sleep(600);
-    const rows = await page.$$eval("#mention-list .sheet-item[data-mention]", (x) => x.length);
+    const rows = await page.$$eval("#mention-list .sheet-item[data-mention-kind='file']", (x) => x.length);
     assert(rows >= 1 && rows <= initialRows, `filtered=${rows}/${initialRows}`);
-    await page.click("#mention-list .sheet-item[data-mention]");
+    await page.click("#mention-list .sheet-item[data-mention-kind='file']");
     await sleep(600);
     const value = await page.$eval("#input", (n) => n.value);
     assert(/@/.test(value), value);

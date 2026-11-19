@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node server.mjs",
     "start:lan": "node server.mjs --port 8099 --host 0.0.0.0",
-    "vendor": "node tools/vendor.mjs",
+    "vendor": "node tools/vendor.mjs && node tools/icons.mjs",
+    "icons": "node tools/icons.mjs",
     "icons": "python tools/make_icons.py"
   },
   "keywords": [
@@ -23,6 +24,7 @@
     "esbuild": "^0.28.2",
     "highlight.js": "^11.12.0",
     "katex": "^0.19.1",
+    "lucide": "1.75.0",
     "markdown-it": "^15.0.3",
     "markdown-it-anchor": "^10.1.0",
     "markdown-it-attrs": "^5.0.1",

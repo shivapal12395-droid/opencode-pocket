@@ -10,7 +10,8 @@ import { buildStandaloneHtml, exportName, printDocument } from "./export.js";
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
-const icon = (name, cls = "") => `<svg class="${cls}"><use href="#i-${name}"/></svg>`;
+const icon = (name, cls = "") =>
+  `<svg aria-hidden="true" focusable="false" class="${cls}"><use href="#i-${name}"/></svg>`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
@@ -81,6 +82,21 @@ const state = {
   phase: "idle",
   sending: false,
   stopping: false,
+  // A stop that could not be delivered (offline, or the request was lost) is
+  // remembered and retried once the socket is back. The composer stays in
+  // Stop mode until the server confirms the turn ended.
+  stopPending: false,
+  stopRetryTimer: 0,
+  // Counts prompts, so a late lifecycle event from a turn the user stopped can
+  // be told apart from a turn they started afterwards. `stopConfirmedSeq` is the
+  // sequence number of the last prompt whose turn was stopped.
+  promptSeq: 0,
+  stopConfirmedSeq: -1,
+  // Execution liveness is whatever the server says it is: its `execution.*`
+  // events, plus the running set it reports on every connect. `activeEpoch`
+  // drops a snapshot that was in flight when a newer execution event arrived.
+  activeEpoch: 0,
+  activeSessions: null,
   // set when a prompt was sent but no answer came back: it may or may not have
   // reached the server, so it is never resent automatically.
   pendingPrompt: null,
@@ -111,6 +127,9 @@ const state = {
   inbox: [],
   // steer = join the running turn, queue = run after it
   delivery: store.get("delivery", "steer"),
+  // Structured @mentions in the composer draft: { kind, key, label, token }.
+  // Anchored against the text at send time, like the official client does.
+  mentions: [],
   // placeholders so a 1.x service worker cannot call missing hooks
   artifacts: [],
   todos: [],
@@ -532,33 +551,117 @@ async function recoverAfterReconnect() {
   } catch {
     /* the next event or resume will try again */
   }
+  // A Stop that never reached the server goes out now, before anything else is
+  // trusted: the turn may still be running, and the user asked for it to end.
+  if (state.stopPending && state.busy && state.session) {
+    interrupt({ retry: true }).catch(() => {});
+  }
   if (state.pendingPrompt) checkPendingPrompt({ quiet: true }).catch(() => {});
+}
+
+/**
+ * Ask the server which sessions it is draining right now.
+ *
+ * Returns `null` when the answer is unknown — the route is missing on an older
+ * server, or the request failed. Unknown must never be read as "nothing is
+ * running": that would clear a turn that is still going.
+ */
+async function fetchActiveSessions() {
+  if (!state.api) return null;
+  try {
+    const res = await state.api.activeSessions();
+    const data = res?.data;
+    if (!data || typeof data !== "object") return null;
+    return new Set(Object.keys(data).filter((id) => data[id]?.type === "running"));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Reconcile the open session's liveness with the server's running set.
+ *
+ * The stream has no replay, so a terminal event missed while the socket was
+ * down leaves the composer in Stop mode forever; and a killed process keeps
+ * `time.busy > time.idle`, so the timestamps cannot tell a dead turn from a
+ * live one either. One snapshot per connect answers both.
+ *
+ * A snapshot that raced a newer execution event is dropped: the event is
+ * ordered on the stream, the response is not.
+ */
+async function reconcileActive() {
+  if (!state.api) return null;
+  const epoch = state.activeEpoch;
+  const set = await fetchActiveSessions();
+  if (!set || state.activeEpoch !== epoch) return null;
+  state.activeSessions = set;
+  if (!state.session || state.screen !== "chat") return set;
+  const sid = state.session.id;
+  if (set.has(sid) === state.busy) return set;
+  if (set.has(sid)) {
+    setBusy(true);
+    return set;
+  }
+  // The server owns no drain for this session, so the turn is over even though
+  // its terminal event never arrived. Settle it the way a terminal would.
+  setBusy(false);
+  state.lastAssistantId = null;
+  scheduleMessageRefresh(80);
+  loadInbox().catch(() => {});
+  return set;
 }
 
 /**
  * Ask the server whether the open session is still running.
  *
  * Events are the fast path, but a phone that was killed, backgrounded or
- * disconnected can miss the `session.idle`. Without this check the composer
- * would stay in "Stop" mode forever on a turn that already finished.
+ * disconnected can miss the terminal event. `/api/session/active` answers for
+ * the whole process at once; the projected timestamps remain only as a fallback
+ * for a server that does not expose the route.
  */
-async function verifyTurn() {
+async function verifyTurn({ afterStop = false } = {}) {
   if (!state.api || !state.session) return null;
   const sid = state.session.id;
-  let res;
-  try {
-    res = await state.api.getSession(sid);
-  } catch {
-    return null;
+  const epoch = state.activeEpoch;
+  const set = await fetchActiveSessions();
+  if (state.session?.id !== sid || state.activeEpoch !== epoch) return null;
+  let running;
+  if (set) {
+    state.activeSessions = set;
+    running = set.has(sid);
+  } else {
+    let res;
+    try {
+      res = await state.api.getSession(sid);
+    } catch {
+      return null;
+    }
+    const s = res?.data;
+    if (!s || state.session?.id !== sid || state.activeEpoch !== epoch) return null;
+    state.session = { ...state.session, ...s };
+    running = (s.time?.busy ?? 0) > (s.time?.idle ?? 0);
   }
-  const s = res?.data;
-  if (!s || state.session?.id !== sid) return null;
-  state.session = { ...state.session, ...s };
-  const running = (s.time?.busy ?? 0) > (s.time?.idle ?? 0);
   if (running) {
     if (!state.busy) {
       setBusy(true);
       setPhase("thinking");
+      if (afterStop) {
+        // The stop was confirmed by a step event, but the turn is alive again:
+        // a tool that cannot be interrupted. Say so, and stop ignoring its
+        // events — otherwise the transcript freezes while it runs.
+        state.stopConfirmedSeq = -1;
+        toast("The server is still running this turn — a tool may not be interruptible");
+      }
+    } else if (afterStop && state.stopping) {
+      // The server still says the turn is open after an interrupt: either the
+      // stop has not landed yet, or a tool is running that cannot be
+      // interrupted. Saying "Stopping…" forever would be a lie, so the button
+      // goes back to Stop and the user is told what is happening.
+      state.stopping = false;
+      state.stopPending = false;
+      state.stopConfirmedSeq = -1;
+      setPhase(state.phase === "stopping" ? "thinking" : state.phase);
+      toast("The server is still running this turn — a tool may not be interruptible");
     }
   } else if (state.busy) {
     setBusy(false);
@@ -694,7 +797,7 @@ function renderSessions() {
           <span class="ws-dot" style="--c:${workspaceColor(dir)}"></span>
           <span class="ws-name">${escapeHtml(basename(dir) || dir)}</span>
           <span class="ws-count">${sessions.length}</span>
-          <svg class="ws-caret"><use href="#i-chevron"/></svg>
+          <svg aria-hidden="true" class="ws-caret"><use href="#i-chevron"/></svg>
         </button>
         <div class="ws-items">
           ${sessions
@@ -962,7 +1065,16 @@ function setChatHeader() {
 
 function setBusy(busy) {
   state.busy = busy;
-  if (!busy) state.stopping = false;
+  if (!busy) {
+    // The server said the turn is over, so a stop that was still pending is
+    // now confirmed — this is the only place that clears those flags.
+    state.stopping = false;
+    state.stopPending = false;
+    if (state.stopRetryTimer) {
+      clearTimeout(state.stopRetryTimer);
+      state.stopRetryTimer = 0;
+    }
+  }
   if (el.deliveryToggle) {
     el.deliveryToggle.hidden = !busy;
     el.deliveryToggle.querySelector("span").textContent = state.delivery === "queue" ? "Queue" : "Steer";
@@ -982,12 +1094,14 @@ function setBusy(busy) {
 function setPhase(phase) {
   state.phase = phase;
   const live = state.busy && phase !== "idle";
+  const label = phase === "stopping" ? "Stopping..." : phase === "thinking" ? "Thinking" : "Working";
   el.chatStatus.hidden = !state.busy;
-  el.chatStatus.querySelector("span").textContent = phase === "thinking" ? "Thinking" : "Working";
+  el.chatStatus.querySelector("span").textContent = label;
   el.chatStatus.classList.toggle("thinking", phase === "thinking");
+  el.chatStatus.classList.toggle("stopping", phase === "stopping");
   setConnection(
     live ? "busy" : state.online ? "online" : "offline",
-    live ? (phase === "thinking" ? "Thinking" : "Working") : state.online ? "Connected" : "Offline"
+    live ? label : state.online ? "Connected" : "Offline"
   );
 }
 
@@ -1012,10 +1126,16 @@ function armStaleWatch() {
     state.staleTimer = 0;
     if (!state.busy) return;
     if (!state.online) {
-      state.staleTimer = setTimeout(() => armStaleWatch(), 30000);
+      armStaleWatch();
       return;
     }
-    verifyTurn().catch(() => {});
+    verifyTurn()
+      .catch(() => {})
+      // Still running? Keep checking: one lost terminal event must not leave
+      // the composer in Stop mode for the rest of the session.
+      .finally(() => {
+        if (state.busy) armStaleWatch();
+      });
   }, 45000);
 }
 
@@ -1054,12 +1174,17 @@ async function openSession(sessionOrId) {
   store.set("lastWorkspace", session.location?.directory ?? state.lastWorkspace);
   addTab(session);
   state.messages = [];
+  state.mentions = [];
   state.permissions = [];
   updatePermBanner();
   state.lastAssistantId = null;
   setChatHeader();
   updateChatStatus();
-  setBusy((session.time?.busy ?? 0) > (session.time?.idle ?? 0));
+  // Liveness is the server's running set, never the projected timestamps
+  // alone: a process killed mid-turn leaves busy > idle forever. Until a
+  // snapshot or a verify lands, assume idle rather than showing Stop on a turn
+  // that already finished.
+  setBusy(state.activeSessions ? state.activeSessions.has(session.id) : false);
 
   if (state.screen !== "chat") {
     showScreen("chat");
@@ -1093,6 +1218,9 @@ async function openSession(sessionOrId) {
   } catch (err) {
     handleError(err, "Could not load messages");
   }
+  // The snapshot may predate this session's last event; confirm with the server
+  // now that the transcript is on screen.
+  verifyTurn().catch(() => {});
   // Fire and forget: the watermark and the change list are decorations.
   if (session.time?.idle) state.api.viewSession(session.id, session.time.idle).catch(() => {});
   refreshDiff();
@@ -1269,12 +1397,25 @@ function ensureAssistant(msgID, data = {}) {
 }
 
 
+/** A tool the user stopped: the server records it as an error with type aborted. */
+function toolAborted(part) {
+  if (part.state?.status !== "error") return false;
+  const err = part.state?.error;
+  return err?.type === "aborted" || /interrupt|abort/i.test(String(err?.message ?? ""));
+}
+
 // Tool state is a tagged union on `status`: streaming | running | completed | error
 // (SessionMessage.ToolState). Streaming carries the raw, partial input as a string.
 function toolStatus(part) {
+  if (toolAborted(part)) return "interrupted";
   const status = part.state?.status;
   if (status === "streaming") return "running";
   if (status === "pending" || status === "queued") return "pending";
+  // A finished turn cannot still be running a tool. When the server stops a
+  // step (interrupt, crash, non-interruptible tool) the part can stay `running`
+  // in the transcript; a spinner that never stops is a lie, so it reads as
+  // "stopped".
+  if (!state.busy && (status === "running" || status == null)) return "interrupted";
   return status ?? "running";
 }
 
@@ -1330,7 +1471,7 @@ function toolSummary(part) {
 
 function renderTool(part) {
   const status = toolStatus(part);
-  const failed = part.state?.status === "error";
+  const failed = part.state?.status === "error" && !toolAborted(part);
   const key = escapeHtml(part.id ?? Math.random().toString(36));
   const summary = toolSummary(part);
   // An errored tool keeps its partial output in `content` and its reason in `error`.
@@ -1343,12 +1484,14 @@ function renderTool(part) {
     ? "terminal"
     : /grep|glob|search|find/i.test(part.name || "")
       ? "search"
-      : /read|write|edit|file/i.test(part.name || "")
-        ? "file"
-        : "wrench";
+      : /question|ask/i.test(part.name || "")
+        ? "question"
+        : /read|write|edit|file/i.test(part.name || "")
+          ? "file"
+          : "wrench";
   const name = String(part.name || "").toLowerCase();
   const done = { read: "Read", edit: "Edited", write: "Wrote", patch: "Patched", shell: "Ran", bash: "Ran", grep: "Searched", glob: "Searched", list: "Listed", webfetch: "Fetched", fetch: "Fetched", websearch: "Searched", task: "Ran", question: "Asked" };
-  const verb = status === "running" ? "Running" : failed ? "Failed" : done[name] ?? "Ran";
+  const verb = status === "running" ? "Running" : status === "interrupted" ? "Stopped" : failed ? "Failed" : done[name] ?? "Ran";
   const noun =
     {
       read: "file",
@@ -1374,8 +1517,8 @@ function renderTool(part) {
         <span class="tool-icon">${icon(iconName)}</span>
         <span class="tool-name">${verb} ${escapeHtml(noun)}</span>
         ${summary ? `<span class="tool-summary">${escapeHtml(summary)}</span>` : ""}
-        <span class="tool-state" data-status="${failed ? "error" : status === "completed" ? "completed" : "running"}">
-          ${status === "completed" ? icon("check") : failed ? icon("x") : `<span class="spinner"></span>`}
+        <span class="tool-state" data-status="${failed ? "error" : status === "completed" ? "completed" : status === "interrupted" ? "interrupted" : "running"}">
+          ${status === "completed" ? icon("check") : status === "interrupted" ? icon("stop") : failed ? icon("x") : `<span class="spinner"></span>`}
         </span>
       </button>
       <div class="tool-body">
@@ -1428,7 +1571,7 @@ function activitySummary(items) {
   for (const { part } of items) {
     if (part.type !== "tool") continue;
     counts.set(toolVerb(part), (counts.get(toolVerb(part)) ?? 0) + 1);
-    if (part.state?.status === "error") failed += 1;
+    if (part.state?.status === "error" && !toolAborted(part)) failed += 1;
     if (toolStatus(part) === "pending") pending += 1;
   }
   const bits = [...counts.entries()].map(([verb, n]) => `${verb} ${n}`);
@@ -1519,7 +1662,7 @@ function renderActivity(items, m, streaming, keyOverride = null, durationMs = 0)
       <span class="act-dot${live ? " live" : ""}"></span>
       <span class="act-title">${escapeHtml(title)}</span>
       ${sub ? `<span class="act-sub">${escapeHtml(sub)}</span>` : ""}
-      ${icon("chevron", "caret")}
+      ${icon("expand", "caret")}
     </button>
     <div class="activity-body">${body}</div>
   </div>`;
@@ -1569,7 +1712,7 @@ function assistantActions(m) {
   const id = escapeHtml(m.id);
   return `<div class="msg-actions" data-for="${id}">
     <button data-act="copy-msg" data-msg-id="${id}" aria-label="Copy answer">${icon("copy")}</button>
-    <button data-act="regen" data-msg-id="${id}" aria-label="Regenerate">${icon("rotate")}</button>
+    <button data-act="regen" data-msg-id="${id}" aria-label="Retry / regenerate">${icon("retry")}</button>
     <button data-act="more-msg" data-msg-id="${id}" aria-label="More actions">${icon("more")}</button>
   </div>`;
 }
@@ -1647,32 +1790,18 @@ function renderAssistant(m, opts = {}) {
   const turnLive = opts.turnLive ?? (state.busy && m.id === state.lastAssistantId);
   // Only the message that ends the turn carries actions and token counters.
   const showMeta = opts.showMeta !== false;
-  const turn = opts.turn ?? null;
-  const showActivity = !!opts.showActivity && !!turn?.items?.length;
-  let activityShown = false;
 
-  // One activity panel per user request: tool/reasoning parts of every
-  // assistant step in this turn live in a single group, rendered once.
+  // Tool and reasoning parts never render here: the turn's single activity
+  // panel is placed after the user message (see renderMessages), so the answer
+  // body contains only the answer.
   const blocks = [];
   parts.forEach((part, idx) => {
-    if (part.type === "tool" || part.type === "reasoning") {
-      if (showActivity && !activityShown) {
-        activityShown = true;
-        blocks.push({
-          kind: "activity",
-          items: turn.items,
-          key: "turn:" + turn.id,
-          durationMs: turnDuration(turn, turnLive),
-        });
-      }
-      return;
-    }
+    if (part.type === "tool" || part.type === "reasoning") return;
     blocks.push({ kind: "part", part, idx });
   });
 
   const html = blocks
     .map((b) => {
-      if (b.kind === "activity") return renderActivity(b.items, m, turnLive, b.key, b.durationMs);
       const { part, idx } = b;
       if (part.type === "text") {
         // Whitespace-only text parts are common between tool calls; rendering
@@ -1705,7 +1834,7 @@ function renderAssistant(m, opts = {}) {
         m.retry.error?.message ? ` · ${escapeHtml(m.retry.error.message)}` : ""
       }</div>`
     : "";
-  const failure = m.error ? renderFailure(m.error) : "";
+  const failure = m.error && m.error.type !== "aborted" && !m.interrupted ? renderFailure(m.error) : "";
   // Only a *finished* run can be called incomplete: while the turn is open the
   // server is still working, and a mid-turn length stop is its normal signal to
   // continue in smaller steps.
@@ -2033,6 +2162,33 @@ function normalizeDiagramSource(source) {
   return text;
 }
 
+/**
+ * Draw one diagram without moving the reader.
+ *
+ * Mermaid replaces a text block with an SVG of a different height. When that
+ * block is above the viewport, the browser keeps scrollTop and the reader's
+ * content slides; when it is the block they are looking at, the page jumps.
+ * Measuring the node before and after lets the transcript stay put.
+ */
+async function drawDiagramInPlace(mod, node) {
+  const holds = state.screen === "chat" && el.messages.contains(node) && !isNearBottom();
+  const before = holds ? node.getBoundingClientRect().top : 0;
+  const source = node.textContent ?? "";
+  const prepared = prepareDiagram(source);
+  try {
+    const svg = await mod.drawOne(node, prepared.text);
+    rememberDiagram(source, svg, prepared.droppedNotes);
+    if (prepared.droppedNotes) panelNote(node, diagramNoteText(prepared.droppedNotes));
+  } catch (err) {
+    markDiagramFailed(node, err);
+  } finally {
+    if (holds && node.isConnected) {
+      const delta = node.getBoundingClientRect().top - before;
+      if (delta) el.messages.scrollTop += delta;
+    }
+  }
+}
+
 async function drawDiagrams(nodes) {
   const list = nodes.filter((n) => n.isConnected && !n.classList.contains("drawn") && !n.classList.contains("failed"));
   if (!list.length) return;
@@ -2046,15 +2202,7 @@ async function drawDiagrams(nodes) {
   }
   for (const node of list) {
     if (!node.isConnected || node.classList.contains("drawn")) continue;
-    const source = node.textContent ?? "";
-    const prepared = prepareDiagram(source);
-    try {
-      const svg = await mod.drawOne(node, prepared.text);
-      rememberDiagram(source, svg, prepared.droppedNotes);
-      if (prepared.droppedNotes) panelNote(node, diagramNoteText(prepared.droppedNotes));
-    } catch (err) {
-      markDiagramFailed(node, err);
-    }
+    await drawDiagramInPlace(mod, node);
   }
 }
 
@@ -2071,15 +2219,7 @@ async function paintArtifactDiagrams() {
   }
   for (const node of nodes) {
     if (!node.isConnected) continue;
-    const source = node.textContent ?? "";
-    const prepared = prepareDiagram(source);
-    try {
-      const svg = await mod.drawOne(node, prepared.text);
-      rememberDiagram(source, svg, prepared.droppedNotes);
-      if (prepared.droppedNotes) panelNote(node, diagramNoteText(prepared.droppedNotes));
-    } catch (err) {
-      markDiagramFailed(node, err);
-    }
+    await drawDiagramInPlace(mod, node);
   }
 }
 
@@ -2263,6 +2403,15 @@ function renderMessages(force = false) {
   // a long answer streams in.
   state.artifacts = detectArtifacts(state.messages);
   const prevScroll = el.messages.scrollTop;
+  // The message under the top edge. A rebuild can change heights above the
+  // viewport (a form card closing, a panel expanding, an older page loading),
+  // and a raw scrollTop would then show different content. Realigning this
+  // node keeps the reader on the same line.
+  const anchorNode = pinned
+    ? null
+    : [...el.messages.querySelectorAll("[data-msg]")].find((n) => n.getBoundingClientRect().bottom > 0) ?? null;
+  const anchorId = anchorNode?.dataset.msg ?? null;
+  const anchorTop = anchorNode ? anchorNode.getBoundingClientRect().top : 0;
   const openTools = new Set($$(".tool-card.open", el.messages).map((n) => n.dataset.tool));
   const openReasoning = new Set($$(".reasoning.open", el.messages).map((n) => n.dataset.reasoning));
   const openActivity = new Set($$(".activity.open", el.messages).map((n) => n.dataset.activity));
@@ -2292,7 +2441,19 @@ function renderMessages(force = false) {
   for (const m of state.messages) {
     if (m.type === "user" || turnCursor < 0) {
       turnCursor = Math.max(0, turnCursor + 1);
-      turns[turnCursor] = { id: turnCursor, items: [], activityMessageId: null, metaMessageId: null, start: 0, end: 0, last: 0 };
+      turns[turnCursor] = {
+        id: turnCursor,
+        // The message the activity panel renders after. Normally the user
+        // message; for a window that starts mid-turn, the first message of the
+        // turn, so the panel still has one deterministic home.
+        userId: m.id,
+        items: [],
+        anchor: null,
+        metaMessageId: null,
+        start: 0,
+        end: 0,
+        last: 0,
+      };
     }
     turnIndex.set(m, turnCursor);
     const bucket = turns[turnCursor];
@@ -2307,7 +2468,7 @@ function renderMessages(force = false) {
       messageParts(m).forEach((part, idx) => {
         if (part.type === "tool" || part.type === "reasoning") {
           turns[turnCursor].items.push({ part, idx });
-          if (!turns[turnCursor].activityMessageId) turns[turnCursor].activityMessageId = m.id;
+          if (!turns[turnCursor].anchor) turns[turnCursor].anchor = m;
         }
       });
       // Actions and the token line belong to the answer that ends the turn.
@@ -2316,6 +2477,15 @@ function renderMessages(force = false) {
       const hasAnswer = messageParts(m).some((p) => p.type === "text" && (p.text ?? "").trim());
       if (hasAnswer) turns[turnCursor].metaMessageId = m.id;
     }
+  }
+
+  // One panel per turn, rendered at a fixed place: directly after the user
+  // message that started the turn. Letting the panel live inside whichever
+  // assistant step happened to hold the first tool made it drift between the
+  // answer's paragraphs as steps arrived.
+  const panelAt = new Map();
+  for (const turn of turns) {
+    if (turn?.items.length && turn.userId) panelAt.set(turn.userId, turn);
   }
 
   // Long sessions arrive one page at a time; earlier pages stay one tap away
@@ -2330,35 +2500,50 @@ function renderMessages(force = false) {
   for (const m of state.messages) {
     const turn = turns[turnIndex.get(m)] ?? null;
     const lastTurn = !!turn && turn.id === turns.length - 1;
+    // The turn's single activity panel: after the user message that started
+    // the turn, or before the first message of a window that begins mid-turn.
+    const panelTurn = panelAt.get(m.id);
+    const panelHtml = panelTurn
+      ? renderActivity(
+          panelTurn.items,
+          panelTurn.anchor ?? m,
+          lastTurn && state.busy,
+          "turn:" + panelTurn.userId,
+          turnDuration(panelTurn, lastTurn && state.busy)
+        )
+      : "";
     if (m.type === "user") {
       shownFailure = null;
       chunks.push(renderUser(m));
-    } else if (m.type === "assistant") {
-      if (m.error) shownFailure = m.error.message ?? "";
-      chunks.push(
-        renderAssistant(m, {
-          turn,
-          showActivity: !!turn && turn.activityMessageId === m.id,
-          turnLive: lastTurn && state.busy,
-          streaming: state.busy && m.id === state.lastAssistantId,
-          showMeta: !turn || !turn.metaMessageId || turn.metaMessageId === m.id,
-        })
-      );
-    } else if (m.type === "idle" && m.outcome && m.outcome !== "succeeded") {
-      if (m.outcome === "failed") {
-        const msg = m.error?.message ?? "";
-        if (!msg || msg !== shownFailure) chunks.push(renderFailure(m.error));
-      } else {
-        chunks.push(renderSystem(m.outcome === "interrupted" ? "Interrupted" : "Stopped", "stop"));
-      }
-    } else if (m.type === "shell") chunks.push(renderShell(m));
-    else if (m.type === "compaction") chunks.push(renderCompaction(m));
-    else if (m.type === "skill") chunks.push(renderSystem(`Skill · ${m.name ?? m.skill ?? ""}`, "spark"));
-    else if (m.type === "synthetic" && m.text) chunks.push(renderSynthetic(m));
-    else if (m.type === "system" && m.text) chunks.push(renderSystem(m.description || m.text, "spark"));
-    else if (m.type === "agent-switched") chunks.push(renderSystem(`Agent · ${m.agent ?? ""}`, "spark"));
-    else if (m.type === "model-switched") chunks.push(renderSystem(`Model · ${m.model?.id ?? ""}`, "spark"));
-    else if (m.type === "location-switched") chunks.push(renderSystem("Workspace changed", "folder"));
+      if (panelHtml) chunks.push(panelHtml);
+    } else {
+      if (panelHtml) chunks.push(panelHtml);
+      if (m.type === "assistant") {
+        if (m.error && m.error.type !== "aborted") shownFailure = m.error.message ?? "";
+        chunks.push(
+          renderAssistant(m, {
+            turn,
+            turnLive: lastTurn && state.busy,
+            streaming: state.busy && m.id === state.lastAssistantId,
+            showMeta: !turn || !turn.metaMessageId || turn.metaMessageId === m.id,
+          })
+        );
+      } else if (m.type === "idle" && m.outcome && m.outcome !== "succeeded") {
+        if (m.outcome === "failed") {
+          const msg = m.error?.message ?? "";
+          if (!msg || msg !== shownFailure) chunks.push(renderFailure(m.error));
+        } else {
+          chunks.push(renderSystem(m.outcome === "interrupted" ? "Interrupted" : "Stopped", "stop"));
+        }
+      } else if (m.type === "shell") chunks.push(renderShell(m));
+      else if (m.type === "compaction") chunks.push(renderCompaction(m));
+      else if (m.type === "skill") chunks.push(renderSystem(`Skill · ${m.name ?? m.skill ?? ""}`, "spark"));
+      else if (m.type === "synthetic" && m.text) chunks.push(renderSynthetic(m));
+      else if (m.type === "system" && m.text) chunks.push(renderSystem(m.description || m.text, "spark"));
+      else if (m.type === "agent-switched") chunks.push(renderSystem(`Agent · ${m.agent ?? ""}`, "spark"));
+      else if (m.type === "model-switched") chunks.push(renderSystem(`Model · ${m.model?.id ?? ""}`, "spark"));
+      else if (m.type === "location-switched") chunks.push(renderSystem("Workspace changed", "folder"));
+    }
   }
   // Forms sit at the end of the transcript: they block the turn that produced
   // them, so they have to be impossible to miss.
@@ -2403,7 +2588,13 @@ function renderMessages(force = false) {
   state.renderedIds = idsNow;
 
   if (pinned) scrollToBottom(false);
-  else el.messages.scrollTop = prevScroll;
+  else {
+    el.messages.scrollTop = prevScroll;
+    if (anchorId) {
+      const node = el.messages.querySelector(`[data-msg="${CSS.escape(anchorId)}"]`);
+      if (node) el.messages.scrollTop += node.getBoundingClientRect().top - anchorTop;
+    }
+  }
   updateJumpLatest();
 }
 
@@ -2422,30 +2613,30 @@ function upsertForm(form) {
 }
 
 function settleForm(id, status, answer) {
-  const entry = state.forms.find((f) => f.form?.id === id);
-  if (entry) {
-    entry.status = status;
-    entry.answer = answer;
-  }
+  // A settled question is no longer a card. Keeping it in the transcript meant
+  // an answered form stayed pinned below every later message. The server keeps
+  // the question itself as a `question` tool part inside the turn's activity
+  // panel, which is where history reads it from.
+  const i = state.forms.findIndex((f) => f.form?.id === id);
+  const entry = i >= 0 ? state.forms[i] : null;
+  if (i >= 0) state.forms.splice(i, 1);
+  return entry ? { ...entry, status, answer } : null;
 }
 
 async function loadForms() {
   if (!state.api || !state.session) return;
   try {
     const list = await state.api.forms(state.session.id);
+    // Only forms that are still waiting are cards. Everything else has already
+    // been answered or cancelled and exists in the transcript as a tool part.
     const next = list.map((form) => {
       const local = state.forms.find((f) => f.form?.id === form.id);
-      // Keep a local answer/selection if this form is still pending on screen.
+      // Keep a local selection if this form is still pending on screen.
       return local ? { ...local, form } : { form, status: "pending", answer: null, values: {} };
     });
-    // The server only returns forms that are still *waiting*. An answered form
-    // is a record of what was asked and what was chosen, so it stays in the
-    // transcript until another session is opened.
-    for (const local of state.forms) {
-      if (local.status !== "pending" && !next.some((f) => f.form?.id === local.form?.id)) next.push(local);
-    }
+    const changed = next.length !== state.forms.length || next.some((f, i) => f.form?.id !== state.forms[i]?.form?.id);
     state.forms = next;
-    renderMessages();
+    if (changed) renderMessages();
   } catch {
     // Forms are optional in older servers; never block the transcript on them.
   }
@@ -2465,10 +2656,14 @@ async function submitForm(formID) {
   const answer = buildAnswer(card, entry.form, entry.values);
   try {
     await state.api.replyForm(state.session.id, formID, answer);
+    // The card closes the moment the server accepts the answer. No forced
+    // render and no forced scroll: the next step arrives on its own, and a
+    // reader who had scrolled up stays where they were.
     settleForm(formID, "answered", answer);
     haptic(10);
-    renderMessages(true);
-    scrollToBottom(true);
+    toast("Answer sent");
+    renderMessages();
+    scheduleMessageRefresh(250);
   } catch (err) {
     handleError(err, "Could not send the answer");
   }
@@ -2479,7 +2674,9 @@ async function dismissForm(formID) {
   try {
     await state.api.cancelForm(state.session.id, formID);
     settleForm(formID, "cancelled", null);
-    renderMessages(true);
+    toast("Question dismissed");
+    renderMessages();
+    scheduleMessageRefresh(250);
   } catch (err) {
     handleError(err, "Could not dismiss");
   }
@@ -2647,21 +2844,34 @@ function handleEvent(event) {
     }
   }
 
+  // A liveness request that raced this frame must not overwrite it: events are
+  // ordered on the stream, a response is not.
+  if (type.startsWith("session.execution.") && eventBelongsToOpenSession(data)) {
+    state.activeEpoch += 1;
+  }
+
   // Forms and the inbox come before the open-session filter: a question can
   // arrive for a session that is not on screen and still must be remembered.
   if (type === "form.created" && data.form) {
     upsertForm(data.form);
     if (state.session?.id === data.form.sessionID && state.screen === "chat") {
-      renderMessages(true);
-      scrollToBottom(true);
+      // A blocking question must be noticeable without yanking a reader who is
+      // in the middle of an older message: the card lands at the bottom, and
+      // the jump-to-latest pill says there is something new down there.
+      renderMessages();
+      updateJumpLatest();
       haptic(10);
       toast("The agent asked a question");
     }
     return;
   }
   if (type === "form.replied" || type === "form.cancelled") {
-    settleForm(data.id, type === "form.replied" ? "answered" : "cancelled", data.answer ?? null);
-    if (state.session?.id === data.sessionID) renderMessages();
+    // Idempotent: a repeat of the same event finds nothing to remove.
+    const entry = settleForm(data.id, type === "form.replied" ? "answered" : "cancelled", data.answer ?? null);
+    if (entry && state.session?.id === data.sessionID) {
+      renderMessages();
+      scheduleMessageRefresh(250);
+    }
     return;
   }
   if (type.startsWith("session.inbox.")) {
@@ -2672,6 +2882,9 @@ function handleEvent(event) {
   if (type === "server.connected") {
     const wasOffline = !state.online;
     applyNetStatus("online");
+    // The stream has no replay: ask what the server is actually running before
+    // trusting the state the last connection left behind.
+    reconcileActive().catch(() => {});
     if (!wasOffline) {
       if (state.screen === "chat") scheduleMessageRefresh(200);
       else refreshSessions(false).catch(() => {});
@@ -2707,16 +2920,38 @@ function handleEvent(event) {
 
   switch (type) {
     case "session.execution.started":
+      // A turn the user stopped can still emit wind-down events (the server
+      // finishes the step that was running). Those must not resurrect
+      // "Responding" after the stop was confirmed.
+      if (state.stopConfirmedSeq >= 0 && state.stopConfirmedSeq === state.promptSeq) break;
       setBusy(true);
       setPhase("thinking");
       break;
+    case "session.execution.interrupted":
+      // The server's confirmation that the turn is over. This is the only place
+      // a stop becomes real; nothing before it is allowed to say "Stopped".
+      state.stopConfirmedSeq = state.promptSeq;
+      setBusy(false);
+      state.lastAssistantId = null;
+      scheduleMessageRefresh(80);
+      // A prompt that was queued behind the stopped turn is still waiting on
+      // the server. Show it, so it is neither lost nor silently executed.
+      loadInbox().catch(() => {});
+      loadForms().catch(() => {});
+      break;
+    // The execution terminals are the only authority for a finished turn:
+    // 2.3.0 publishes `session.execution.succeeded|failed|interrupted` and a
+    // projected `idle` message row, never a `session.idle` event.
+    // `session.idle` stays below only as a tolerated alias for an older server;
+    // nothing requires it.
     case "session.execution.succeeded":
     case "session.execution.failed":
-    case "session.execution.interrupted":
     case "session.idle":
       setBusy(false);
       state.lastAssistantId = null;
-      scheduleMessageRefresh(250);
+      // Pull the finished transcript now, not on the next prompt: a missed
+      // `text.ended` or a late final write must appear immediately.
+      scheduleMessageRefresh(80);
       // A prompt that was ambiguous may have landed; the reload above is the
       // moment the truth exists on disk.
       setTimeout(() => {
@@ -2731,6 +2966,8 @@ function handleEvent(event) {
       break;
     }
     case "session.retry.scheduled": {
+      // A turn the user stopped is not resurrected by a retry event either.
+      if (state.stopConfirmedSeq >= 0 && state.stopConfirmedSeq === state.promptSeq) break;
       // The provider hiccuped and the server is waiting to try again. Showing it
       // prevents a silent pause that looks like a hang.
       const m = ensureAssistant(data.assistantMessageID, data);
@@ -2743,9 +2980,21 @@ function handleEvent(event) {
     case "session.step.failed": {
       const m = ensureAssistant(data.assistantMessageID, data);
       m.retry = undefined;
-      m.error = data.error ?? m.error ?? { message: "The step failed" };
+      const aborted = data.error?.type === "aborted";
+      if (aborted) {
+        // The user stopped the turn. That is not a failure: keep the partial
+        // answer and say nothing in red.
+        m.interrupted = true;
+        delete m.error;
+        state.stopConfirmedSeq = state.promptSeq;
+      } else {
+        m.error = data.error ?? m.error ?? { message: "The step failed" };
+      }
+      state.lastAssistantId = null;
       setBusy(false);
       renderMessages();
+      scheduleMessageRefresh(120);
+      loadInbox().catch(() => {});
       break;
     }
     case "session.step.ended": {
@@ -2760,6 +3009,9 @@ function handleEvent(event) {
       break;
     }
     case "session.step.started": {
+      // Same rule as execution.started: a stopped turn's wind-down must not put
+      // the composer back into Stop mode.
+      if (state.stopConfirmedSeq >= 0 && state.stopConfirmedSeq === state.promptSeq) break;
       state.lastAssistantId = data.assistantMessageID;
       ensureAssistant(data.assistantMessageID, { ...data, started: data.started });
       setBusy(true);
@@ -2801,6 +3053,15 @@ function handleEvent(event) {
       }
       $(".stream-caret", el.messages)?.remove();
       renderMessages();
+      // The server's copy is now final. Re-read it once so a dropped delta or a
+      // partial markdown block cannot survive on screen.
+      scheduleMessageRefresh(500);
+      // If the terminal event (`execution.*` / `idle`) is lost, the turn would
+      // stay "Responding" forever. Ask the server shortly after the text ends.
+      const sid = data.sessionID;
+      setTimeout(() => {
+        if (state.session?.id === sid && state.busy) verifyTurn().catch(() => {});
+      }, 2500);
       break;
     }
     case "session.reasoning.started": {
@@ -3109,6 +3370,95 @@ function attachmentsPayload() {
   }));
 }
 
+const utf8Base64 = (text) => {
+  const bytes = new TextEncoder().encode(String(text));
+  let binary = "";
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary);
+};
+
+const MIME_BY_EXT = {
+  json: "application/json",
+  md: "text/markdown",
+  html: "text/html",
+  css: "text/css",
+  ts: "text/typescript",
+  tsx: "text/typescript",
+  js: "text/javascript",
+  jsx: "text/javascript",
+  py: "text/x-python",
+  sh: "text/x-shellscript",
+  yml: "text/yaml",
+  yaml: "text/yaml",
+  sql: "text/plain",
+};
+const mimeFor = (path) => MIME_BY_EXT[String(path).split(".").pop()?.toLowerCase()] ?? "text/plain";
+
+/**
+ * Re-anchor the draft's mentions against what is actually being sent.
+ *
+ * The textarea can be edited after a mention is inserted, so the ranges are
+ * recomputed by searching for each token from the previous match. A token the
+ * user deleted is dropped instead of being sent to the wrong offset.
+ */
+function anchoredMentions(text) {
+  const out = [];
+  let cursor = 0;
+  for (const m of state.mentions ?? []) {
+    const at = text.indexOf(m.token, cursor);
+    if (at < 0) continue;
+    out.push({ ...m, start: at, end: at + m.token.length });
+    cursor = at + m.token.length;
+  }
+  return out;
+}
+
+/** The structured prompt fields the 2.3.0 endpoint accepts for mentions. */
+function mentionPayload(text) {
+  const anchored = anchoredMentions(text);
+  const files = [];
+  const agents = [];
+  const skills = [];
+  const attachments = [];
+  for (const m of anchored) {
+    const mention = { start: m.start, end: m.end, text: m.token };
+    if (m.kind === "file") {
+      const rel = toPosix(m.key);
+      // The server reads `file:` uris itself (readFileAttachment), so binary
+      // and large files do not have to travel through the WebView.
+      const absolute = toPosix(`${workspaceDir()}/${rel}`).replace(/\/{2,}/g, "/");
+      // The uri itself tells the server how to read it (`data:` is inline,
+      // `file:` is a path). `source` stays out: the schema's "uri" variant
+      // requires its own uri, and a bare { type: "uri" } is rejected.
+      files.push({
+        uri: "file://" + absolute.split("/").map(encodeURIComponent).join("/"),
+        name: baseName(rel),
+        mention,
+      });
+      attachments.push({ name: baseName(rel), mime: mimeFor(rel), path: rel });
+      continue;
+    }
+    if (m.kind === "agent") {
+      agents.push({ name: m.key, mention });
+      continue;
+    }
+    if (m.kind === "skill") skills.push({ id: m.key, name: m.label || m.key, mention });
+  }
+  return { files, agents, skills, attachments };
+}
+
+/** Standing instructions, sent as a file attachment so the transcript stays clean. */
+function instructionsAttachment() {
+  const text = String(store.get("instructions", "") || "").trim();
+  if (!text) return null;
+  return {
+    uri: "data:text/plain;base64," + utf8Base64(text),
+    name: "pocket-instructions.txt",
+    description: "Standing instructions from Pocket, applied to every prompt",
+    source: { type: "inline" },
+  };
+}
+
 async function sendMessage() {
   const text = el.input.value.trim();
   if (!state.session) return;
@@ -3181,6 +3531,9 @@ async function deliverPrompt({ text, files = [], delivery = "steer", synthetic =
   };
   state.pendingPrompt = record;
   state.sending = true;
+  // A new prompt is a new turn: lifecycle events from a turn the user stopped
+  // are no longer ignored.
+  state.promptSeq += 1;
   if (!synthetic) {
     state.messages.push({
       id: localId,
@@ -3194,12 +3547,41 @@ async function deliverPrompt({ text, files = [], delivery = "steer", synthetic =
   }
   setBusy(true);
   setPhase("thinking");
+  // Structured mentions and standing instructions travel with the prompt, the
+  // way the official composer sends them. Mentions are anchored against the
+  // text before the draft is cleared.
+  const mention = mentionPayload(text);
+  const outgoing = [...(files ?? [])];
+  if (mention.files.length) outgoing.push(...mention.files);
+  const standing = instructionsAttachment();
+  if (standing) outgoing.push(standing);
+  const metadata = {
+    displayText: text,
+    ...(state.session.agent ? { agent: state.session.agent } : {}),
+    ...(state.session.model ? { model: state.session.model } : {}),
+    ...(mention.attachments.length ? { attachments: mention.attachments } : {}),
+  };
+  state.mentions = [];
   try {
     if (command && text.startsWith("/")) {
       const match = text.match(/^\/(\S+)\s*([\s\S]*)$/);
-      await state.api.command(sid, { name: match?.[1] ?? "help", text: match?.[2] ?? "", files });
+      await state.api.command(sid, {
+        name: match?.[1] ?? "help",
+        text: match?.[2] ?? "",
+        files: outgoing,
+        agents: mention.agents,
+        skills: mention.skills,
+        metadata,
+      });
     } else {
-      await state.api.prompt(sid, { text, files, delivery });
+      await state.api.prompt(sid, {
+        text,
+        files: outgoing,
+        delivery,
+        agents: mention.agents,
+        skills: mention.skills,
+        metadata,
+      });
     }
     record.status = "accepted";
     state.pendingPrompt = null;
@@ -3276,25 +3658,66 @@ function discardPendingPrompt() {
   toast("Discarded");
 }
 
-async function interrupt() {
+/**
+ * Stop the running turn.
+ *
+ * The rules that matter:
+ *  - the request goes out on the first tap, and a second tap is a no-op only
+ *    while a request is in flight (so a lost request is not a dead button);
+ *  - the UI says "Stopping…", never "Stopped", until the server confirms;
+ *  - offline, it becomes a *pending* stop that is retried on reconnect — the
+ *    composer is not released on a lie;
+ *  - if the server still reports the turn as running (a tool that cannot be
+ *    interrupted), that is surfaced instead of pretending it stopped.
+ */
+async function interrupt({ retry = false } = {}) {
   if (!state.session) return;
-  if (state.stopping) return;
+  if (state.stopping && !retry) return;
+  const sid = state.session.id;
+
   if (!state.online) {
-    toast("Can't reach the server to stop — reconnect and try again");
+    if (state.busy && state.session?.id === sid) {
+      state.stopPending = true;
+      setPhase("stopping");
+      toast("Stop pending — it will be sent when the connection returns");
+    }
     return;
   }
+
   state.stopping = true;
-  const sid = state.session.id;
+  state.stopPending = false;
+  setPhase("stopping");
+  // A stop request that never comes back must not lock the button forever.
+  if (state.stopRetryTimer) clearTimeout(state.stopRetryTimer);
+  state.stopRetryTimer = setTimeout(() => {
+    state.stopRetryTimer = 0;
+    state.stopping = false;
+  }, 8000);
+
   try {
     await state.api.interrupt(sid);
     haptic(14);
-    toast("Stopping…");
-    // If no idle arrives, ask the server whether the run is still open.
+    // Ask the server to confirm. A missed `idle` is the common case, and a tool
+    // that ignores the interrupt has to be reported, not hidden.
     setTimeout(() => {
-      if (state.session?.id === sid && state.busy) verifyTurn().catch(() => {});
-    }, 6000);
+      if (state.session?.id === sid && state.busy) {
+        verifyTurn({ afterStop: true }).catch(() => {});
+      }
+    }, 2500);
   } catch (err) {
     state.stopping = false;
+    if (state.stopRetryTimer) {
+      clearTimeout(state.stopRetryTimer);
+      state.stopRetryTimer = 0;
+    }
+    // A dropped request is ambiguous: keep it pending and retry on reconnect.
+    if (!err?.status || err.status === 0 || err.retryable) {
+      state.stopPending = true;
+      setPhase("stopping");
+      toast("Stop not confirmed — retrying when the connection is back");
+      return;
+    }
+    setPhase(state.busy ? "thinking" : "idle");
     handleError(err, "Could not stop");
   }
 }
@@ -3733,33 +4156,89 @@ function openCodeViewer(block) {
   });
 }
 
+/**
+ * A bounded, briefly cached walk of the workspace, used when `/api/fs/find`
+ * is unavailable. Depth and count are capped so a phone never re-reads a whole
+ * tree on every keystroke, and paths are deduplicated because a listing may
+ * echo a directory it was asked about.
+ */
+const mentionIndex = { dir: "", at: 0, files: [] };
+async function workspaceFileIndex() {
+  const dir = workspaceDir();
+  if (mentionIndex.dir === dir && Date.now() - mentionIndex.at < 30_000) return mentionIndex.files;
+  const out = [];
+  const seen = new Set();
+  const skip = /(^|\/)(\.git|node_modules|\.next|dist|build|\.venv|vendor)$/;
+  const walk = async (rel, depth) => {
+    if (out.length >= 400 || depth > 3) return;
+    let entries = [];
+    try {
+      entries = await state.api.listDir(rel || ".", { directory: dir });
+    } catch {
+      return;
+    }
+    for (const entry of entries ?? []) {
+      const path = toPosix(entry.path ?? "").replace(/^\.\//, "").replace(/\/+$/, "");
+      if (!path || seen.has(path)) continue;
+      seen.add(path);
+      const type = entry.type === "directory" ? "directory" : "file";
+      out.push({ path, type });
+      if (type === "directory" && !skip.test(path)) await walk(path, depth + 1);
+      if (out.length >= 400) return;
+    }
+  };
+  await walk("", 0);
+  mentionIndex.dir = dir;
+  mentionIndex.files = out;
+  mentionIndex.at = Date.now();
+  return out;
+}
+
+/**
+ * @-mentions, the way the official composer sends them.
+ *
+ * A file becomes a `files[]` entry with a `file:` uri and a mention range, an
+ * agent becomes `agents[]`, a skill becomes `skills[]`. The server reads the
+ * file / prepares the skill, so the model actually receives it instead of
+ * seeing the text "@src/app.ts" and nothing else.
+ */
 async function openMentionSheet(initial = "") {
-  if (!state.session) return needsSession("Mention a file", "the file list comes from the workspace of the session you are in.");
+  if (!state.session) return needsSession("Mention", "mentions come from the workspace of the session you are in.");
+  let kind = "file";
+  let agents = null;
+  let skills = null;
   openSheet({
     kind: "mention",
-    title: "Mention a file",
+    title: "Mention",
     body: (root) => {
       root.innerHTML =
+        '<div class="mention-tabs">' +
+        '<button data-mkind="file" class="on">Files</button>' +
+        '<button data-mkind="agent">Agents</button>' +
+        '<button data-mkind="skill">Skills</button>' +
+        "</div>" +
         '<div class="sheet-search"><div class="search-box">' +
         icon("search") +
         '<input class="search-input" id="mention-search" placeholder="Search files by name" autocomplete="off" spellcheck="false"></div></div>' +
         '<div class="sheet-list" id="mention-list"></div>';
       const input = $("#mention-search", root);
       const list = $("#mention-list", root);
+      const tabs = $(".mention-tabs", root);
       let token = 0;
 
-      const search = async (q) => {
-        const mine = ++token;
-        const query = String(q ?? "").trim();
-        // An empty query is not an empty screen: show a short list so the
-        // sheet is useful the moment it opens, then narrow as you type.
-        list.innerHTML = '<p class="sheet-note">' + (query ? "Searching..." : "Loading files...") + "</p>";
+      const paintFiles = async (query, mine) => {
         let hits = [];
         try {
           hits = await state.api.findFiles(query, { directory: workspaceDir(), limit: query ? 60 : 20 });
-        } catch (err) {
-          if (mine === token) list.innerHTML = '<p class="sheet-note">' + escapeHtml(err.message || "Search failed") + "</p>";
-          return;
+        } catch {
+          // `/api/fs/find` answers 500 on the bundled 2.3.0 runtime, so the
+          // picker falls back to walking the workspace with `/api/fs/list`.
+          const index = await workspaceFileIndex();
+          if (mine !== token) return;
+          const needle = query.toLowerCase();
+          hits = index
+            .filter((f) => f.type === "file" && (!needle || f.path.toLowerCase().includes(needle)))
+            .slice(0, 60);
         }
         if (mine !== token) return;
         if (!hits.length) {
@@ -3771,7 +4250,7 @@ async function openMentionSheet(initial = "") {
         list.innerHTML = hits
           .map(
             (h) =>
-              '<button class="sheet-item" data-mention="' + escapeHtml(toPosix(h.path)) + '">' +
+              '<button class="sheet-item" data-mention-kind="file" data-mention-key="' + escapeHtml(toPosix(h.path)) + '">' +
               '<span class="si-icon">' + icon(h.type === "directory" ? "folder" : "file") + "</span>" +
               '<span class="si-text"><span class="si-title">' + escapeHtml(baseName(h.path)) + "</span>" +
               '<span class="si-sub">' + escapeHtml(parentDir(h.path) || ".") + "</span></span></button>"
@@ -3779,40 +4258,110 @@ async function openMentionSheet(initial = "") {
           .join("");
       };
 
+      const paintAgents = async (query, mine) => {
+        if (!agents) agents = await ensureAgents().catch(() => []);
+        if (mine !== token) return;
+        const hits = agents
+          .filter((a) => !a.hidden && a.mode !== "subagent")
+          .filter((a) => !query || String(a.name || "").toLowerCase().includes(query.toLowerCase()));
+        list.innerHTML = hits.length
+          ? hits
+              .map(
+                (a) =>
+                  '<button class="sheet-item" data-mention-kind="agent" data-mention-key="' + escapeHtml(a.name) + '">' +
+                  '<span class="si-icon">' + icon("spark") + "</span>" +
+                  '<span class="si-text"><span class="si-title">' + escapeHtml(a.name) + "</span>" +
+                  '<span class="si-sub">' + escapeHtml(a.description || a.mode || "agent") + "</span></span></button>"
+              )
+              .join("")
+          : '<p class="sheet-note">No agents match.</p>';
+      };
+
+      const paintSkills = async (query, mine) => {
+        if (!skills) skills = await state.api.skills({ directory: workspaceDir() }).catch(() => []);
+        if (mine !== token) return;
+        const hits = skills.filter(
+          (s) => !query || `${s.name ?? ""} ${s.id ?? ""}`.toLowerCase().includes(query.toLowerCase())
+        );
+        list.innerHTML = hits.length
+          ? hits
+              .map(
+                (s) =>
+                  '<button class="sheet-item" data-mention-kind="skill" data-mention-key="' + escapeHtml(s.id) + '" data-mention-label="' +
+                  escapeHtml(s.name || s.id) + '">' +
+                  '<span class="si-icon">' + icon("book") + "</span>" +
+                  '<span class="si-text"><span class="si-title">' + escapeHtml(s.name || s.id) + "</span>" +
+                  '<span class="si-sub">' + escapeHtml(s.description || (s.autoinvoke ? "Auto-invoked" : "Manual")) + "</span></span></button>"
+              )
+              .join("")
+          : '<p class="sheet-note">No skills available in this workspace.</p>';
+      };
+
+      const paint = async (q) => {
+        const mine = ++token;
+        const query = String(q ?? "").trim();
+        list.innerHTML = '<p class="sheet-note">' + (query ? "Searching..." : "Loading...") + "</p>";
+        if (kind === "agent") return paintAgents(query, mine);
+        if (kind === "skill") return paintSkills(query, mine);
+        return paintFiles(query, mine);
+      };
+
+      tabs.addEventListener("click", (e) => {
+        const btn = e.target.closest("[data-mkind]");
+        if (!btn || btn.dataset.mkind === kind) return;
+        kind = btn.dataset.mkind;
+        for (const b of tabs.querySelectorAll("[data-mkind]")) b.classList.toggle("on", b === btn);
+        input.placeholder = kind === "file" ? "Search files by name" : kind === "agent" ? "Search agents" : "Search skills";
+        input.value = "";
+        paint("");
+        input.focus();
+      });
+
       let timer = 0;
       input.addEventListener("input", () => {
         clearTimeout(timer);
-        timer = setTimeout(() => search(input.value), 220);
+        timer = setTimeout(() => paint(input.value), 220);
       });
       input.addEventListener("keydown", (e) => {
         if (e.key !== "Enter") return;
         e.preventDefault();
         clearTimeout(timer);
-        search(input.value);
+        paint(input.value);
       });
       list.addEventListener("click", (e) => {
-        const btn = e.target.closest("[data-mention]");
-        if (btn) insertMention(btn.dataset.mention);
+        const btn = e.target.closest("[data-mention-kind]");
+        if (!btn) return;
+        insertMention({
+          kind: btn.dataset.mentionKind,
+          key: btn.dataset.mentionKey,
+          label: btn.dataset.mentionLabel || btn.dataset.mentionKey,
+        });
       });
 
       if (initial) input.value = initial;
-      search(initial);
+      paint(initial);
       input.focus();
     },
   });
 }
 
-function insertMention(path) {
+function insertMention(input) {
+  const m =
+    typeof input === "string"
+      ? { kind: "file", key: toPosix(input), label: baseName(input) }
+      : { ...input, key: input.kind === "file" ? toPosix(input.key) : input.key };
+  const minted = "@" + (m.kind === "file" ? m.key : String(m.label || m.key).replace(/\s+/g, "-"));
   const value = el.input.value;
   const caret = el.input.selectionStart ?? value.length;
   const before = value.slice(0, caret);
   // Replace a half-typed "@path" right before the caret, otherwise just append.
   const match = /@([^\s@]*)$/.exec(before);
-  const mention = "@" + toPosix(path) + " ";
+  const insert = minted + " ";
   el.input.value = match
-    ? before.slice(0, match.index) + mention + value.slice(caret)
-    : before + mention + value.slice(caret);
-  const at = (match ? match.index : before.length) + mention.length;
+    ? before.slice(0, match.index) + insert + value.slice(caret)
+    : before + insert + value.slice(caret);
+  state.mentions.push({ kind: m.kind, key: m.key, label: m.label || m.key, token: minted });
+  const at = (match ? match.index : before.length) + insert.length;
   el.input.focus();
   el.input.setSelectionRange(at, at);
   autoGrow();
@@ -4393,14 +4942,42 @@ function openLibrarySheet() {
       const iconFor = { html: "image", diagram: "image", diff: "diff", code: "code", doc: "book" };
       root.innerHTML = `<div class="sheet-list">${items
         .map(
-          (a) => `<button class="sheet-item" data-lib-open="${escapeHtml(a.id)}">
-            <span class="si-icon">${icon(iconFor[a.kind] ?? "file")}</span>
-            <span class="si-text"><span class="si-title">${escapeHtml(a.title || a.kind)}</span>
-            <span class="si-sub">${escapeHtml(a.kind)}${a.language ? " · " + escapeHtml(a.language) : ""}${a.lines ? " · " + a.lines + " lines" : ""}</span></span>
-          </button>`
+          (a) => `<div class="lib-row">
+            <button class="sheet-item" data-lib-open="${escapeHtml(a.id)}">
+              <span class="si-icon">${icon(iconFor[a.kind] ?? "file")}</span>
+              <span class="si-text"><span class="si-title">${escapeHtml(a.title || a.kind)}</span>
+              <span class="si-sub">${escapeHtml(a.kind)}${a.language ? " · " + escapeHtml(a.language) : ""}${a.lines ? " · " + a.lines + " lines" : ""}</span></span>
+            </button>
+            <button class="lib-attach" data-lib-attach="${escapeHtml(a.id)}" aria-label="Attach to chat" title="Attach to chat">${icon("attach")}</button>
+          </div>`
         )
         .join("")}</div>`;
       root.addEventListener("click", (e) => {
+        const attach = e.target.closest("[data-lib-attach]");
+        if (attach) {
+          const art = (state.artifacts ?? []).find((x) => x.id === attach.dataset.libAttach);
+          const body = art?.code ?? art?.doc ?? "";
+          if (!body) {
+            toast("Nothing to attach");
+            return;
+          }
+          // An artifact is text the model already wrote. Attaching it back is a
+          // data URL, so it reaches the next prompt with no server file read.
+          const ext = art.kind === "html" ? "html" : art.kind === "diff" ? "diff" : art.kind === "diagram" ? "mmd" : "txt";
+          const mime = art.kind === "html" ? "text/html" : "text/plain";
+          const stem = String(art.title || art.kind || "artifact").replace(/[^\w.-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60);
+          state.attachments.push({
+            uri: `data:${mime};base64,${utf8Base64(body)}`,
+            name: `${stem || "artifact"}.${ext}`,
+            source: { type: "inline" },
+          });
+          renderAttachments();
+          updateSendButton();
+          closeSheet();
+          toast("Attached to chat");
+          el.input.focus();
+          return;
+        }
         const b = e.target.closest("[data-lib-open]");
         if (!b) return;
         const art = (state.artifacts ?? []).find((x) => x.id === b.dataset.libOpen);
@@ -4517,9 +5094,9 @@ function openCustomizeSheet() {
       root.innerHTML = `<p class="sheet-note">OpenCode's own configuration, not a parallel copy.</p>
         <div class="sheet-list">
           ${sheetRow({ iconName: "cpu", title: "Models", sub: "Default, per-session, variants", attrs: "data-cust=models" })}
-          ${sheetRow({ iconName: "key", title: "Providers", sub: "Catalog, connections, custom", attrs: "data-cust=providers" })}
+          ${sheetRow({ iconName: "providers", title: "Providers", sub: "Catalog, connections, custom", attrs: "data-cust=providers" })}
           ${sheetRow({ iconName: "spark", title: "Agents", sub: "Build, plan, general, explore", attrs: "data-cust=agents" })}
-          ${sheetRow({ iconName: "shield", title: "Permissions", sub: "Saved allow rules", attrs: "data-cust=permissions" })}
+          ${sheetRow({ iconName: "permission", title: "Permissions", sub: "Saved allow rules", attrs: "data-cust=permissions" })}
           ${sheetRow({ iconName: "book", title: "Skills", sub: "Available instructions", attrs: "data-cust=skills" })}
           ${sheetRow({ iconName: "code", title: "Commands", sub: "Server command registry", attrs: "data-cust=commands" })}
           ${sheetRow({ iconName: "file", title: "Instructions", sub: "AGENTS.md entries", attrs: "data-cust=instructions" })}
@@ -5503,7 +6080,7 @@ function renderTodos() {
       .map((t) => {
         const stateName = String(t.status ?? "pending").toLowerCase();
         const cls = /complete|done/.test(stateName) ? "done" : /progress|running/.test(stateName) ? "active" : "";
-        const mark = cls === "done" ? "✓" : cls === "active" ? "◐" : "";
+        const mark = cls === "done" ? icon("check") : cls === "active" ? icon("refresh") : "";
         return `<div class="todo-row ${cls}"><span class="todo-mark">${mark}</span><span>${escapeHtml(t.content || "")}</span></div>`;
       })
       .join("") +
@@ -6479,6 +7056,42 @@ function prefSegRow(title, sub, name, options, current) {
   </div>`;
 }
 
+/**
+ * Standing instructions, in the user's words.
+ *
+ * The 2.3.0 prompt endpoint has no field for them, so they travel as a text
+ * file attachment on every prompt: the model reads them, while the transcript
+ * keeps showing only what the user typed. Empty means off.
+ */
+function openPromptInstructionsSheet() {
+  const current = String(store.get("instructions", "") || "");
+  openSheet({
+    kind: "instructions",
+    title: "Prompt instructions",
+    body: (root) => {
+      root.innerHTML =
+        '<p class="sheet-note">Attached to every message as a text file, in your own words. Leave it empty to turn it off.</p>' +
+        '<textarea class="input instructions-input" id="instructions-text" rows="8" placeholder="e.g. This project uses bun, not npm. Prefer small diffs."></textarea>' +
+        '<div class="instructions-actions"><button class="btn btn-primary" id="instructions-save">Save</button>' +
+        '<button class="btn btn-ghost" id="instructions-clear">Clear</button></div>';
+      const area = $("#instructions-text", root);
+      area.value = current;
+      $("#instructions-save", root).addEventListener("click", () => {
+        const next = area.value.trim();
+        store.set("instructions", next);
+        closeSheet();
+        toast(next ? "Instructions attached to every prompt" : "Instructions cleared");
+      });
+      $("#instructions-clear", root).addEventListener("click", () => {
+        store.set("instructions", "");
+        area.value = "";
+        toast("Instructions cleared");
+      });
+      area.focus();
+    },
+  });
+}
+
 function openPrefsStudio() {
   const p = state.prefs;
   openSheet({
@@ -6781,6 +7394,7 @@ function openSettings() {
             </div>
           </div>
           ${sheetSettingRow("settings", "Preferences", "Type size, accent, reading mode, code", "open-prefs")}
+          ${sheetSettingRow("edit", "Prompt instructions", "Extra context attached to every message", "open-prompt-instructions")}
           <div class="setting-row">
             <div class="setting-text"><div class="setting-title">Server</div><div class="setting-sub">${escapeHtml(state.demo ? "Demo mode · fake data, no server" : state.base)}</div></div>
             <span class="si-icon" style="color:var(--accent)">${icon("wifi")}</span>
@@ -6934,6 +7548,10 @@ function openSettings() {
         }
         if (e.target.closest("#open-prefs")) {
           openPrefsStudio();
+          return;
+        }
+        if (e.target.closest("#open-prompt-instructions")) {
+          openPromptInstructionsSheet();
           return;
         }
         if (e.target.closest("#saved-permissions")) {

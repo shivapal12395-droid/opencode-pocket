@@ -55,6 +55,18 @@ On a first launch the bundled engine downloads itself; the launch screen reports
 
 No phone, no server, no account: **[open the demo](https://shivapal12395-droid.github.io/opencode-pocket/?demo=1)**. It runs entirely in your browser with fake sessions, a fake streaming reply, fake diffs — and if you ask it something about *failing*, you'll see the real failure path too. Demo mode exercises the same code as a live server; only the API is swapped.
 
+## Install
+
+| You want | Use | Guide |
+|---|---|---|
+| Everything on one phone | **Android APK** (recommended) | [docs/INSTALL.md](docs/INSTALL.md#1-android-apk-recommended) |
+| Browser/PWA, server in Termux | **Termux + Debian** | [docs/INSTALL.md](docs/INSTALL.md#2-browser--pwa-with-termux-no-build-step) |
+| UI on the phone, agent on a laptop | **Split setup** | [docs/INSTALL.md](docs/INSTALL.md#3-split-setup-ui-on-the-phone-agent-on-a-laptop) |
+
+The APK starts its own verified OpenCode runtime, so it needs no Termux at all.
+The full step-by-step guide, build commands, updating and troubleshooting live in
+[docs/INSTALL.md](docs/INSTALL.md).
+
 ## Features
 
 ### First open
@@ -82,6 +94,8 @@ No phone, no server, no account: **[open the demo](https://shivapal12395-droid.g
 - **Rewind** — undo the last turn, restoring the files it changed, then keep or drop it.
 - **Usage** — tokens and cost under every answer, plus a rollup across all sessions.
 - **Attachments** — camera or gallery, compressed before sending.
+- **Library attach** — any artifact (code, page, diagram, diff, long doc) can be attached back to the composer and sent with the next prompt.
+- **Prompt instructions** — an optional standing note (Settings → Prompt instructions) that travels with every message as a text attachment, so the model follows your project rules without polluting the transcript.
 
 ### Sessions
 - Grouped by workspace, searchable, rename, delete, archive.
@@ -98,8 +112,9 @@ No phone, no server, no account: **[open the demo](https://shivapal12395-droid.g
 - **Agents** — switch between build / plan / your own.
 - **Skills** — list what the workspace offers and load one into the session.
 - **Permissions** — Allow once / Always / Deny in a bottom sheet; dismissed requests come back as a banner; review and delete your saved "always allow" rules.
-- **@-mentions** — tap `@` (or type it) to search the workspace and drop a file path into your prompt.
+- **@-mentions** — tap `@` (or type it) for **Files / Agents / Skills**. A file is sent as a real structured attachment (the server reads it), an agent is recorded on the turn, and a skill's instructions are prepared server-side — same fields the official composer sends. Ranges re-anchor if you edit around a mention, and mentions clear when you switch sessions.
 - **Slash commands** — `/init`, `/review`, and your own.
+- **Lucide icons** — one outline icon set generated from the pinned `lucide` vanilla package into a local sprite; no CDN, no icon JS at runtime, works offline.
 
 ### Server view
 - **MCP servers** with live status, **providers** and their activation, **workspace files**.
@@ -372,16 +387,20 @@ python tools/make_icons.py
 
 ## Roadmap
 
-- [ ] Session pagination + pull to refresh
+- [ ] Pull to refresh on the session list
 - [ ] Push notifications when a background session finishes
 - [ ] Share sheet / "open in Pocket"
 - [ ] Home-screen widgets for running sessions
+- [ ] Pocket add-ons as model tools (needs an OpenCode plugin; the HTTP API cannot register client-side tools)
 
 PRs welcome — keep it dependency-free. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Hinglish TL;DR
 
-Pura kaam phone pe: Termux me Debian ke andar OpenCode, Termux me Pocket UI, screen Chrome/PWA.
+**Sabse aasan:** APK install karo — app khud verified OpenCode runtime download karke apna daemon
+chala leta hai. Koi Termux/Debian nahi. Steps: [docs/INSTALL.md](docs/INSTALL.md).
+
+**Ya phir browser/PWA:** pura kaam phone pe: Termux me Debian ke andar OpenCode, Termux me Pocket UI, screen Chrome/PWA.
 
 ```bash
 pkg install -y curl nodejs git

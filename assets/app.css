@@ -1682,6 +1682,62 @@ button.setting-row { width: 100%; text-align: left; background: none; border: 0;
 .artifact-diagram.drawn { border: 0; background: none; padding: 0; text-align: center; cursor: zoom-in; }
 .artifact-diagram.drawn svg { max-width: 100%; height: auto; }
 
+/* ---- icon system ----------------------------------------------------------
+   All non-brand glyphs come from the committed Lucide sprite in index.html.
+   One stroke language, one default optical size, one minimum touch target for
+   icon-only controls. Per-context sizes above still win where they are
+   deliberate (empty states, hero logo, diff headers). Colours and the AMOLED
+   palette are untouched: every glyph inherits currentColor. */
+:root {
+  --icon-size: 18px;
+  --icon-stroke: 1.8;
+  --icon-touch: 40px;
+}
+svg[aria-hidden="true"] {
+  flex: none;
+  vertical-align: middle;
+  width: var(--icon-size);
+  height: var(--icon-size);
+  stroke-width: var(--icon-stroke) !important;
+}
+svg.sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
+.icon-btn, .tool-btn, .send-btn, .search-clear, .msg-actions button,
+.side-chat-pill, .side-head button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--icon-touch);
+  min-height: var(--icon-touch);
+}
+.side-head button, .side-chat-pill { min-width: 34px; min-height: 34px; }
+.activity-head .caret { transform: none; opacity: 0.7; }
+.activity.open .activity-head .caret { transform: none; opacity: 1; }
+
+/* ---- prompt mentions, library attach, instructions ---------------------- */
+.mention-tabs { display: flex; gap: 6px; margin: 2px 0 10px; }
+.mention-tabs button {
+  flex: 1; height: 32px; border-radius: 9px; background: var(--soft);
+  color: var(--muted); font-size: 12px; font-weight: 600;
+}
+.mention-tabs button.on { background: var(--accent-soft, var(--soft)); color: var(--accent); }
+
+/* Long model/agent names must ellipsize, not push Send off the screen. */
+.composer-tools { min-width: 0; }
+.composer-tools .chip { min-width: 0; flex: 0 1 auto; overflow: hidden; }
+.composer-tools .chip > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.lib-row { display: flex; gap: 6px; align-items: stretch; }
+.lib-row .sheet-item { flex: 1; min-width: 0; }
+.lib-attach {
+  width: 44px; flex: none; border-radius: 10px; background: var(--soft);
+  color: var(--muted); display: grid; place-items: center;
+}
+.lib-attach:active { background: var(--line); color: var(--text); }
+.lib-attach svg { width: 17px; height: 17px; }
+
+.instructions-input { width: 100%; min-height: 150px; resize: vertical; font-size: 13px; line-height: 1.5; }
+.instructions-actions { display: flex; gap: 8px; margin-top: 10px; }
+
 /* ---- export ---------------------------------------------------------------
    HTML export and printing build their own documents (assets/export.js); the
    chat stylesheet deliberately has no print rules, so nothing here can leak

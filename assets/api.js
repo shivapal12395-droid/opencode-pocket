@@ -245,21 +245,59 @@ export class Api {
     return this.request("GET", `/api/session/${id}/message?${q}`);
   }
 
-  prompt(id, { text, files, delivery = "steer" }) {
+  /**
+   * Send one prompt.
+   *
+   * `files`, `agents` and `skills` are the structured attachments the 2.3.0
+   * endpoint accepts (schema/src/prompt-input.ts): a file is read from its
+   * `file:` uri by the server, a skill's instructions are prepared into the
+   * turn, and an agent is recorded on the user message. `metadata` is the same
+   * record the official client writes (agent/model/displayText).
+   */
+  prompt(id, { text, files, delivery = "steer", agents, skills, metadata }) {
     const body = { text };
     if (files?.length) body.files = files;
+    if (agents?.length) body.agents = agents;
+    if (skills?.length) body.skills = skills;
+    if (metadata && Object.keys(metadata).length) body.metadata = metadata;
     if (delivery) body.delivery = delivery;
     return this.request("POST", `/api/session/${id}/prompt`, body, { timeout: 120000 });
   }
 
-  command(id, { name, text, files }) {
+  command(id, { name, text, files, agents, skills, metadata }) {
     const body = { name, text: text ?? "" };
     if (files?.length) body.files = files;
+    if (agents?.length) body.agents = agents;
+    if (skills?.length) body.skills = skills;
+    if (metadata && Object.keys(metadata).length) body.metadata = metadata;
     return this.request("POST", `/api/session/${id}/command`, body, { timeout: 120000 });
   }
 
-  interrupt(id) {
-    return this.request("POST", `/api/session/${id}/interrupt`, undefined, { timeout: 15000 });
+  /**
+   * Stop the running turn.
+   *
+   * `resume=true` is part of the 2.3.0 contract (protocol/src/groups/session.ts,
+   * `session.interrupt`): after the interruption the server resumes pending
+   * *steering* input and next-in-line control items, while queued next-turn
+   * prompts stay parked. Without it, a prompt the user steered into the turn
+   * they stopped is admitted and then never promoted — it looks lost.
+   * The server rejects `resume=1` with 400, so the value stays the word `true`.
+   */
+  interrupt(id, { resume = true } = {}) {
+    const q = resume ? "?resume=true" : "";
+    return this.request("POST", `/api/session/${id}/interrupt${q}`, undefined, { timeout: 15000 });
+  }
+
+  /**
+   * The sessions this server process is draining right now.
+   *
+   * Answers `{ data: { [sessionID]: { type: "running" } } }`; a session absent
+   * from the map is inactive. This is the only reliable way to tell a turn that
+   * ended while the socket was down from one that is still running, and it is
+   * what the official client snapshots on every `server.connected`.
+   */
+  activeSessions() {
+    return this.request("GET", "/api/session/active", undefined, { timeout: 8000 });
   }
 
   switchModel(id, model) {

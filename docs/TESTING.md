@@ -6,11 +6,16 @@ every layer is honest about what it does *not* prove.
 ```
 node server.mjs --port 8099            # the web layers need this
 
-node test/suite-1.cjs  … suite-13.cjs  # A/B/C  (browser + Node, deterministic fixtures)
+node test/suite-1.cjs  … suite-17.cjs  # A/B/C  (browser + Node, deterministic fixtures)
+                                      # suite-15: execution liveness + active-session reconcile
+                                      # suite-16: the interrupt/resume wire contract (Node only)
 node test/soak.cjs --minutes=15        # C      (sustained session, measurements)
 
 adb forward tcp:9227 localabstract:webview_devtools_remote_$(app pid)
 node test/device-live.cjs              # D      (real daemon, real WebView)
+node test/device-chat-fixes.cjs        # D      (stop / reconcile / activity / question / scroll)
+node test/device-icons.cjs             # D      (real WebView icons, offline rendering, no external requests)
+node test/device-attachments.cjs       # D      (@ picker on the real runtime; /api/fs/find fallback)
 node test/device-stress.cjs            # D      (rotation, keyboard, process death, memory)
 node test/device-render.cjs            # D      (the Aurora-derived renderer)
 node test/device-reinstall.cjs         # D      (uninstall -> reinstall -> restore)
@@ -33,7 +38,13 @@ node test/device-fresh-install.cjs     # D      (first run, engine download from
 | `suite-9`, `suite-10` | live-turn activity, permissions, forms, inbox, session flows |
 | `suite-12` | finish reasons, ambiguous prompts, paging, reconnect reconciliation |
 | `suite-13` | chaos streaming: duplicate / empty / shuffled / one-char / huge / dropped-socket frames |
+| `suite-14` | stop / interruption / delayed terminal / missed idle / activity placement / question cleanup / scroll hold / network stop / background |
+| `suite-15` | `execution.*` is authoritative, no `session.idle` dependency, active-session snapshot on connect, stale/late snapshot safety, offline stop, steer promoted after stop |
+| `suite-16` | `POST /interrupt?resume=true`, auth/no-body shape, no write retries, offline `ApiError`, `GET /session/active` shape (real `assets/api.js` against a local server) |
+| `suite-18` | structured prompt attachments: `@file`/`@agent`/`@skill`, mention ranges, per-prompt metadata, standing instructions, Library attach, listDir fallback |
+| `suite-17` | Lucide sprite integrity (generator check, no CDN, 24px 1.8-stroke outlines), every `<use>` resolves, icon-only buttons named, icons valid after streaming/stop and in every sheet |
 | `device-live` | the real daemon: real turn, Stop, backup, daemon kill → restart |
+| `device-chat-fixes` | the real runtime: stop a streaming turn, stop a running tool, answer a real question form, panel placement, scroll hold |
 
 ## C. Chat UI end-to-end (browser, deterministic fixtures)
 
@@ -63,6 +74,12 @@ Reliability fixtures added for this work:
 
 | Fixture | What it is |
 | --- | --- |
+| `stop me` / `slow stream` | a long streamed answer that can be stopped mid-way |
+| `stop a tool` / `slow tool` | a shell tool that stays running, for stop-during-execution |
+| `stubborn` | a tool that ignores the interrupt: the server keeps running, the UI must say so |
+| `delayed completion` | the answer completes, the terminal event arrives 6s later |
+| `missed idle` | the server finishes but emits no terminal event |
+| `quick tool` | a short one-tool turn, for placement across many turns |
 | `chaos duplicate` | every text frame delivered twice with the same event id |
 | `chaos empty` | empty deltas and frames without a `delta` field |
 | `chaos shuffle` | frames delivered in a scrambled order |

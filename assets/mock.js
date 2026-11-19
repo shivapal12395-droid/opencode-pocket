@@ -875,6 +875,10 @@ export class MockApi {
     this.revert = null;
     // pending forms, keyed by id: { form, sessionID }
     this.formMap = new Map();
+    // how many interrupt requests actually reached the server
+    this.interruptCalls = 0;
+    // sessions whose running tool ignores an interrupt for a while
+    this.stubbornSessions = new Set();
     // queued prompts per session (delivery: "queue")
     this.inboxMap = new Map();
     // sessions with a turn in flight
@@ -887,6 +891,19 @@ export class MockApi {
     // pending permission requests, keyed by request id
     this.permissionMap = new Map();
     this.permissionRuns = new Map();
+    // The running-set endpoint the client reconciles with: how often it was
+    // asked, and two knobs so a test can make the answer slow or unavailable.
+    this.activeCalls = 0;
+    this.activeFails = false;
+    this.activeDelay = 0;
+    // Steered prompts parked while a turn runs. An interrupt with resume=true
+    // promotes them; without it they stay parked, like the real server.
+    this.steers = new Map();
+    this.lastInterruptResume = null;
+    // A process killed mid-turn keeps its claim and `time.busy` but no drain,
+    // so the running set is empty. The old timestamp heuristic reads this as a
+    // live turn and never settles it; only the endpoint knows the truth.
+    this.staleBusy = new Set();
     this.dropped = false;
     this.streamStatus = null;
 
@@ -1104,9 +1121,99 @@ export class MockApi {
         ev("session.text.ended", { assistantMessageID: assistantId, ordinal: 0, text: body });
         ev("session.step.ended", { assistantMessageID: assistantId, finish: "stop" });
         ev("session.execution.succeeded", {});
-        ev("session.idle", {});
       }
     }, at + 260);
+    return { data: { id: userMsg.id, sessionID: sid, type: "user", payload: { text }, delivery: "steer", time: { created: now() } } };
+  }
+
+  /**
+   * A turn slow enough to interrupt, built for the stop tests.
+   *
+   *  - `tool: true` starts a shell tool that never finishes;
+   *  - `terminal: "delayed"` withholds the terminal event for six seconds;
+   *  - `terminal: "silent"` marks the server idle but emits no terminal event,
+   *    which is the "missed idle" case the client has to reconcile itself.
+   */
+  slowTurn(sid, text, { chunks = 60, chunk = 46, delay = 130, tool = false, terminal = "normal", stubborn = false } = {}) {
+    if (stubborn) this.stubbornSessions.add(sid);
+    const body = (CHAOS_DOC + "\n\n").repeat(2).slice(0, chunks * chunk);
+    const userMsg = { id: "msg_u_" + this.seq++, type: "user", text, files: [], time: { created: now() } };
+    const assistantId = "msg_a_" + this.seq++;
+    const textOrdinal = tool ? 1 : 0;
+    const assistant = {
+      id: assistantId,
+      type: "assistant",
+      model: MODEL,
+      agent: "build",
+      content: [{ type: "text", text: "", ordinal: textOrdinal }],
+      time: { created: now() },
+      tokens: { input: 1200, output: 0, cache: { read: 0, write: 0 } },
+      cost: 0.0002,
+    };
+    if (tool) {
+      assistant.content.unshift({
+        type: "tool",
+        id: "call_slow_" + this.seq++,
+        name: "shell",
+        executed: false,
+        state: { status: "running", input: { command: "sleep 30" }, time: { start: now() } },
+      });
+    }
+    this.messageMap[sid] = [...(this.messageMap[sid] ?? []), userMsg, assistant];
+    const token = this.beginRun(sid);
+    const ev = (name, data) => this.emit(name, { sessionID: sid, agent: "build", model: MODEL, ...data });
+    const textPart = assistant.content.find((p) => p.type === "text");
+
+    this.later(() => ev("session.execution.started", {}), 120);
+    this.later(() => {
+      ev("session.step.started", { assistantMessageID: assistantId, started: now() });
+      if (tool) {
+        ev("session.tool.called", {
+          assistantMessageID: assistantId,
+          id: assistant.content[0].id,
+          name: "shell",
+          input: { command: "sleep 30" },
+        });
+      }
+      ev("session.text.started", { assistantMessageID: assistantId, ordinal: textOrdinal });
+    }, 220);
+
+    let at = 300;
+    for (let i = 0; i < body.length; i += chunk) {
+      const piece = body.slice(i, i + chunk);
+      at += delay;
+      this.later(() => {
+        textPart.text += piece;
+        ev("session.text.delta", { assistantMessageID: assistantId, ordinal: textOrdinal, delta: piece });
+      }, at);
+    }
+
+    this.later(() => {
+      // A tool that was running completes normally when the turn is not stopped.
+      if (tool) {
+        const part = assistant.content.find((p) => p.type === "tool");
+        part.state = { ...part.state, status: "completed", time: { ...part.state.time, end: now() }, content: [{ type: "text", text: "done" }] };
+        part.executed = true;
+        ev("session.tool.success", { assistantMessageID: assistantId, id: part.id, executed: true, content: [{ type: "text", text: "done" }] });
+      }
+      assistant.time.completed = now();
+      assistant.tokens.output = Math.ceil(body.length / 4);
+      ev("session.text.ended", { assistantMessageID: assistantId, ordinal: textOrdinal, text: body });
+      ev("session.step.ended", { assistantMessageID: assistantId, finish: "stop" });
+      const finish = () => {
+        this.messageMap[sid].push({ id: "msg_i_" + this.seq++, type: "idle", outcome: "succeeded", time: { created: now() } });
+        this.endRun(sid, token);
+        ev("session.execution.succeeded", {});
+      };
+      if (terminal === "delayed") this.later(finish, 6000);
+      else if (terminal === "silent") {
+        // The server is done; the client never hears it.
+        this.runs.set(sid, ++this.runSeq);
+        this.busySessions.delete(sid);
+        this.messageMap[sid].push({ id: "msg_i_" + this.seq++, type: "idle", outcome: "succeeded", time: { created: now() } });
+      } else finish();
+    }, at + 300);
+
     return { data: { id: userMsg.id, sessionID: sid, type: "user", payload: { text }, delivery: "steer", time: { created: now() } } };
   }
 
@@ -1117,6 +1224,22 @@ export class MockApi {
 
   async info() {
     return { version: "2.3.0", pid: 4242, hostname: "pixel", urls: [], paths: { tmp: "/tmp" } };
+  }
+
+  /**
+   * GET /api/session/active — the sessions this process is draining.
+   *
+   * The client reconciles its Stop/Send state against this on every connect.
+   * `activeFails` makes the request throw (offline, route missing); the client
+   * must then keep what the events established rather than assume idle.
+   */
+  async activeSessions() {
+    this.activeCalls += 1;
+    if (this.activeFails) throw Object.assign(new Error("Network unreachable"), { name: "ApiError", status: 0, retryable: true });
+    if (this.activeDelay) await new Promise((r) => setTimeout(r, this.activeDelay));
+    const data = {};
+    for (const id of this.busySessions) data[id] = { type: "running" };
+    return { data };
   }
 
   async listSessions({ search = "" } = {}) {
@@ -1183,7 +1306,7 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
   async getSession(id) {
     const s = this.sessionList.find((x) => x.id === id);
     if (!s) return { data: null };
-    const busy = this.busySessions.has(id);
+    const busy = this.busySessions.has(id) || this.staleBusy.has(id);
     return {
       data: clone({ ...s, time: { ...(s.time ?? {}), busy: busy ? now() : 0, idle: busy ? 0 : s.time?.idle ?? now() } }),
     };
@@ -1748,15 +1871,122 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
     return { data: clone(s ?? {}) };
   }
 
-  async interrupt(id) {
+  /**
+   * Matches the daemon (verified against the real server):
+   *  - the step is finalized as `aborted` (not a generic failure),
+   *  - the partial answer stays in the transcript,
+   *  - a tool that was mid-flight is left as the server left it,
+   *  - `session.execution.interrupted` ends the turn; there is no `session.idle`
+   *    event, only an `idle` message row with outcome "interrupted",
+   *  - a queued prompt stays queued: a stop does not run it.
+   */
+  /** Finalize the running turn as aborted (used by interrupt). */
+  finishInterrupted(id) {
     this.clearTimers();
-    // Nothing is running after a stop: bump the run token so a stale finish
-    // callback can never mark this session idle twice.
+    this.stubbornSessions.delete(id);
     this.runs.set(id, ++this.runSeq);
     this.busySessions.delete(id);
+    const msgs = this.messageMap[id] ?? [];
+    const assistant = [...msgs].reverse().find((m) => m.type === "assistant" && !m.time?.completed);
+    if (assistant) {
+      const textPart = (assistant.content ?? []).find((p) => p.type === "text");
+      const text = textPart?.text ?? "";
+      assistant.interrupted = true;
+      assistant.error = { type: "aborted", message: "Step interrupted" };
+      assistant.time = { ...(assistant.time ?? {}), completed: now() };
+      // Like the daemon: a tool that was mid-flight is finalized as aborted.
+      for (const part of assistant.content ?? []) {
+        if (part.type !== "tool") continue;
+        if (part.state?.status === "running" || part.state?.status === "streaming" || part.state?.status == null) {
+          part.state = { ...part.state, status: "error", error: { type: "aborted", message: "Step interrupted" } };
+        }
+      }
+      this.emit("session.text.ended", {
+        sessionID: id,
+        assistantMessageID: assistant.id,
+        ordinal: textPart?.ordinal ?? 0,
+        text,
+      });
+      this.emit("session.step.failed", {
+        sessionID: id,
+        assistantMessageID: assistant.id,
+        error: { type: "aborted", message: "Step interrupted" },
+      });
+    }
+    msgs.push({ id: "msg_i_" + this.seq++, type: "idle", outcome: "interrupted", time: { created: now() } });
     this.emit("session.execution.interrupted", { sessionID: id });
-    this.later(() => this.emit("session.idle", { sessionID: id }), 200);
+  }
+
+  async interrupt(id, { resume = true } = {}) {
+    this.interruptCalls += 1;
+    this.lastInterruptResume = resume;
+    // A real interrupt is a round trip, not an instant state flip: the UI has
+    // to say "Stopping…" while this is in flight, and a second tap must not
+    // send a second request.
+    await new Promise((r) => setTimeout(r, 350));
+    if (this.stubbornSessions.has(id)) {
+      // The request was accepted, but the tool ignores it. The server keeps
+      // running until the tool returns; the client must say so rather than
+      // pretend the turn stopped.
+      this.stubbornSessions.delete(id);
+      this.later(() => {
+        this.finishInterrupted(id);
+        this.resumeSteers(id, resume);
+      }, 4000);
+      return { interrupted: true, pending: true };
+    }
+    this.finishInterrupted(id);
+    this.resumeSteers(id, resume);
     return { interrupted: true };
+  }
+
+  /**
+   * Promote steered input after an interrupt — only when the client asked for
+   * it. Without `resume=true` a real server leaves it parked, which is exactly
+   * the "my correction vanished" bug.
+   */
+  resumeSteers(id, resume) {
+    const parked = this.steers.get(id) ?? [];
+    if (!parked.length) return;
+    const text = parked[0].payload?.text ?? parked[0].text;
+    this.steers.delete(id);
+    if (!resume) return;
+    this.later(() => this.steerTurn(id, text), 300);
+  }
+
+  /** The turn a promoted steer runs, after the stopped one settled. */
+  steerTurn(sid, text) {
+    const userMsg = { id: "msg_u_" + this.seq++, type: "user", text, files: [], time: { created: now() } };
+    const assistantId = "msg_a_" + this.seq++;
+    const body = "Resumed after the stop: " + text;
+    const assistant = {
+      id: assistantId,
+      type: "assistant",
+      model: MODEL,
+      agent: "build",
+      content: [{ type: "text", text: "", ordinal: 0 }],
+      time: { created: now() },
+    };
+    this.messageMap[sid] = [...(this.messageMap[sid] ?? []), userMsg, assistant];
+    // The parked steer is now a real message: consume the inbox row.
+    this.inboxMap.set(sid, (this.inboxMap.get(sid) ?? []).filter((item) => !/\bsteer then stop\b/i.test(item.payload?.text ?? "")));
+    const token = this.beginRun(sid);
+    const ev = (name, data) => this.emit(name, { sessionID: sid, agent: "build", model: MODEL, ...data });
+    ev("session.inbox.delivered", { sessionID: sid, inboxID: userMsg.id });
+    ev("session.execution.started", {});
+    this.later(() => {
+      ev("session.step.started", { assistantMessageID: assistantId, started: now() });
+      ev("session.text.started", { assistantMessageID: assistantId, ordinal: 0 });
+    }, 120);
+    this.later(() => {
+      assistant.content[0].text = body;
+      assistant.time.completed = now();
+      ev("session.text.ended", { assistantMessageID: assistantId, ordinal: 0, text: body });
+      ev("session.step.ended", { assistantMessageID: assistantId, finish: "stop" });
+      this.messageMap[sid].push({ id: "msg_i_" + this.seq++, type: "idle", outcome: "succeeded", time: { created: now() } });
+      this.endRun(sid, token);
+      ev("session.execution.succeeded", {});
+    }, 600);
   }
 
   streamEvents(onEvent, onStatus) {
@@ -1791,6 +2021,26 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
   prompt(id, { text, files, delivery = "steer" }) {
     const sid = id;
 
+    // A steered prompt joins the turn that is already running: the server admits
+    // it to the inbox and promotes it at the next safe boundary. If the user
+    // stops that turn instead, only `resume=true` on the interrupt makes it run;
+    // the fixture below is how the stop tests observe that.
+    if (delivery === "steer" && this.busySessions.has(sid) && /\bsteer then stop\b/i.test(text)) {
+      const inboxID = "msg_steer_" + this.seq++;
+      const item = {
+        id: inboxID,
+        sessionID: sid,
+        type: "user",
+        payload: { text },
+        delivery: "steer",
+        time: { created: now() },
+      };
+      this.steers.set(sid, [...(this.steers.get(sid) ?? []), item]);
+      this.inboxMap.set(sid, [...(this.inboxMap.get(sid) ?? []), item]);
+      this.emit("session.inbox.enqueued", { sessionID: sid, inboxID, item });
+      return { data: clone(item) };
+    }
+
     // A queued prompt waits for the running turn, which is what the composer's
     // Steer/Queue chip asks for.
     if (delivery === "queue" && this.busySessions.has(sid)) {
@@ -1816,6 +2066,20 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
 
     // The prompt lands, then the socket dies mid-turn.
     if (/\b(go offline|connection drop)\b/i.test(text)) return this.dropMidTurn(sid, text);
+
+    // A turn with a tool that ignores interrupts: the server accepts the
+    // request but keeps running until the tool returns.
+    if (/\b(stubborn|non-interruptible)\b/i.test(text)) return this.slowTurn(sid, text, { tool: true, stubborn: true });
+    // A short turn with one tool, for placement across many turns.
+    if (/\bquick tool\b/i.test(text)) return this.slowTurn(sid, text, { chunks: 3, delay: 60, tool: true });
+    // A turn long enough to stop mid-way, with a deterministic partial answer.
+    if (/\b(stop me|long running|slow stream)\b/i.test(text)) return this.slowTurn(sid, text);
+    // A tool that never finishes: stopping has to finalize it anyway.
+    if (/\b(stop a tool|tool running|slow tool)\b/i.test(text)) return this.slowTurn(sid, text, { tool: true });
+    // The answer is complete but the terminal event arrives much later.
+    if (/\b(delayed completion|late completion)\b/i.test(text)) return this.slowTurn(sid, text, { terminal: "delayed", chunks: 6 });
+    // The turn is over on the server but the terminal event is lost entirely.
+    if (/\b(missed idle|no idle|lost idle)\b/i.test(text)) return this.slowTurn(sid, text, { terminal: "silent", chunks: 6 });
 
     // An output token limit the way OpenCode handles it: the server continues
     // in smaller steps, so the turn is not presented as an incomplete answer.
@@ -1912,24 +2176,29 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
         a2m.content.push({ type: "text", text: "Both steps are done.", ordinal: 1, time: { completed: now() } });
         ev("session.text.ended", { assistantMessageID: a2, ordinal: 1, text: "Both steps are done." });
         ev("session.step.ended", { assistantMessageID: a2 });
-        ev("session.execution.succeeded", {});
-      }, 2600);
-      this.later(() => {
+        // Finalize in the same tick as the terminal: the real server publishes
+        // execution.succeeded with the settlement commit, so the transcript the
+        // client re-reads on that event already has final usage and timings.
         a1m.tokens = { input: 3200, output: 42, reasoning: 210, cache: { read: 2800, write: 0 } };
         a1m.cost = 0.0004;
         a1m.time = { ...a1m.time, completed: now() };
         a2m.tokens = { input: 3400, output: 58, reasoning: 180, cache: { read: 3100, write: 0 } };
         a2m.cost = 0.0005;
         a2m.time = { ...a2m.time, completed: now() };
-        if (this.endRun(sid, token)) this.emit("session.idle", { sessionID: sid });
-      }, 2900);
+        this.endRun(sid, token);
+        ev("session.execution.succeeded", {});
+      }, 2600);
       return { data: { id: u.id, sessionID: sid, type: "user", payload: { text }, delivery: "steer", time: { created: now() } } };
     }
     const userMsg = {
       id: "msg_u_" + this.seq++,
       type: "user",
       text,
-      files: (files ?? []).map((f) => ({ uri: f.uri, name: f.name, mime: "image/jpeg" })),
+      files: (files ?? []).map((f) => ({
+        uri: f.uri,
+        name: f.name,
+        mime: f.mime ?? (String(f.uri ?? "").startsWith("data:image") ? "image/jpeg" : "text/plain"),
+      })),
       time: { created: now() },
     };
     const assistantId = "msg_a_" + this.seq++;
@@ -1969,7 +2238,6 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
       this.emit("session.step.ended", { sessionID: sid, assistantMessageID: assistantId, finish: "stop" });
       this.emit("session.execution.succeeded", { sessionID: sid });
       this.messageMap[sid].push({ id: "msg_i_" + this.seq++, type: "idle", outcome: "succeeded", time: { created: now() } });
-      this.emit("session.idle", { sessionID: sid });
       const s = this.sessionList.find((x) => x.id === sid);
       if (s) {
         s.title = s.title === "New session" ? text.slice(0, 60) : s.title;
@@ -2021,7 +2289,6 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
       this.emit("session.step.ended", { sessionID: sid, assistantMessageID: assistantId, finish: "stop" });
       this.emit("session.execution.succeeded", { sessionID: sid });
       this.messageMap[sid].push({ id: "msg_i_" + this.seq++, type: "idle", outcome: "succeeded", time: { created: now() } });
-      this.emit("session.idle", { sessionID: sid });
       this.endRun(sid, runToken);
     }, at + 160);
 
@@ -2123,7 +2390,6 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
     this.emit("session.text.ended", { sessionID: sid, assistantMessageID: assistantId, ordinal: 0, text });
     this.messageMap[sid].push({ id: "msg_i_" + this.seq++, type: "idle", outcome: "succeeded", time: { created: now() } });
     this.emit("session.execution.succeeded", { sessionID: sid });
-    this.emit("session.idle", { sessionID: sid });
     this.endRun(sid, token);
   }
 
@@ -2177,7 +2443,6 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
       assistant.time.completed = now();
       this.emit("session.execution.failed", { sessionID: sid, error });
       this.messageMap[sid].push({ id: "msg_i_" + this.seq++, type: "idle", outcome: "failed", error, time: { created: now() } });
-      this.emit("session.idle", { sessionID: sid });
       const s = this.sessionList.find((x) => x.id === sid);
       if (s) {
         s.title = s.title === "New session" ? text.slice(0, 60) : s.title;
@@ -2233,7 +2498,6 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
       ev("session.step.ended", { assistantMessageID: a2, finish: "stop" });
       ev("session.execution.succeeded", {});
       this.messageMap[sid].push({ id: "msg_i_" + this.seq++, type: "idle", outcome: "succeeded", time: { created: now() } });
-      ev("session.idle", {});
       this.endRun(sid, token);
     }, 1150);
     return { data: { id: userMsg.id, sessionID: sid, type: "user", payload: { text }, delivery: "steer", time: { created: now() } } };
@@ -2261,7 +2525,6 @@ const id = "ses_demo_" + Math.random().toString(36).slice(2, 8);
       ev("session.step.ended", { assistantMessageID: a1, finish: "length" });
       ev("session.execution.succeeded", {});
       this.messageMap[sid].push({ id: "msg_i_" + this.seq++, type: "idle", outcome: "succeeded", time: { created: now() } });
-      ev("session.idle", {});
       this.endRun(sid, token);
     }, 420);
     return { data: { id: userMsg.id, sessionID: sid, type: "user", payload: { text }, delivery: "steer", time: { created: now() } } };

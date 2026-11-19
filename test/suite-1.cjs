@@ -209,8 +209,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   await test("Form submit + answer", async () => {
     await page.click("[data-form-submit]");
-    await page.waitForSelector(".form-card.answered", { timeout: 8000 });
-    return "answered";
+    // The pending card closes; the question stays in the transcript as the
+    // turn's activity, and the agent's follow-up answer arrives.
+    await page.waitForFunction(() => !document.querySelector("#messages .form-card"), { timeout: 8000 });
+    await page.waitForFunction(() => /going with/i.test(document.querySelector("#messages")?.innerText ?? ""), { timeout: 8000 });
+    return "answered, card closed, follow-up shown";
   });
 
   await test("Queue / steer + inbox", async () => {

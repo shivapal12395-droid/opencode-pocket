@@ -33,7 +33,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   const transcript = () =>
     page.evaluate(() =>
-      [...document.querySelectorAll("#messages .msg")].map((n) => ({
+      // Direct children, in order: a turn's activity panel is a row of its own
+      // between the user message and the answer, not a child of a message.
+      [...document.querySelectorAll("#messages > *")].map((n) => ({
+        kind: n.classList.contains("activity") ? "panel" : n.classList.contains("msg") ? "msg" : "other",
         stepOnly: n.classList.contains("step-only"),
         msg: n.dataset.msg ?? "-",
         panels: n.querySelectorAll(".activity").length,
@@ -50,19 +53,23 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   await test("A window that opens mid-turn keeps every turn's work", async () => {
     await openSession("ses_demo9");
     const rows = await transcript();
-    const panels = rows.filter((r) => r.panels > 0);
-    assert(panels.length === 2, `panels=${panels.length} rows=${JSON.stringify(rows.map((r) => [r.msg, r.panels]))}`);
-    // the leading run belongs to a request whose user message is not loaded
-    assert(panels[0].msg === "msg_d9pre", "leading panel on " + panels[0].msg);
-    // the turn that has a user message keeps its own panel, on its first step
-    assert(panels[1].msg === "msg_d9s1", "turn panel on " + panels[1].msg);
-    return `pre-user panel on ${panels[0].msg} ("${panels[0].panelHead}"), turn panel on ${panels[1].msg} ("${panels[1].panelHead}")`;
+    const panels = rows.filter((r) => r.kind === "panel");
+    assert(panels.length === 2, `panels=${panels.length} rows=${JSON.stringify(rows.map((r) => [r.msg, r.kind]))}`);
+    const iUser = rows.findIndex((r) => r.msg === "msg_d9u");
+    const iAnswer = rows.findIndex((r) => r.msg === "msg_d9an");
+    assert(iUser > 0 && iAnswer > iUser, "the window is missing its user/answer rows");
+    // the leading run belongs to a request whose user message is not loaded,
+    // so its panel leads the transcript
+    assert(rows.indexOf(panels[0]) < iUser, "the cut-off turn's panel is not first");
+    // the loaded turn's panel sits between its user message and its answer
+    assert(rows.indexOf(panels[1]) > iUser && rows.indexOf(panels[1]) < iAnswer, `turn panel at ${rows.indexOf(panels[1])}, user ${iUser}, answer ${iAnswer}`);
+    return `pre-user panel ("${panels[0].panelHead}"), turn panel ("${panels[1].panelHead}") between user and answer`;
   });
 
   await test("Exactly one activity panel per user request", async () => {
     const rows = await transcript();
     const users = rows.filter((r) => r.msg.startsWith("msg_d9u")).length;
-    const panels = rows.reduce((n, r) => n + r.panels, 0);
+    const panels = rows.filter((r) => r.kind === "panel").length;
     // two requests in the window: the cut-off one and the loaded one
     assert(users === 1 && panels === 2, `users=${users} panels=${panels}`);
     const heads = rows.filter((r) => r.panelHead).map((r) => r.panelHead);
@@ -73,11 +80,16 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   await test("A step that only ran tools never becomes its own message", async () => {
     const rows = await transcript();
     const stepOnly = rows.filter((r) => r.stepOnly);
-    assert(stepOnly.length >= 2, "no step-only rows: " + JSON.stringify(rows.map((r) => r.msg)));
-    assert(stepOnly.every((r) => r.panels > 0), "a step-only row rendered with no panel: " + JSON.stringify(stepOnly));
-    const bare = rows.filter((r) => r.panels === 0 && r.actionButtons === 0 && !r.sys && !r.msg.startsWith("msg_d9"));
-    assert(bare.length === 0, "stray rows: " + JSON.stringify(bare));
-    return `${stepOnly.length} tool-only rows, each folded into a panel`;
+    assert(stepOnly.length === 0, "tool-only rows still rendered: " + JSON.stringify(stepOnly.map((r) => r.msg)));
+    const cards = await page.evaluate(() => ({
+      total: document.querySelectorAll("#messages .tool-card").length,
+      insidePanel: document.querySelectorAll("#messages .activity .tool-card").length,
+    }));
+    assert(cards.total > 0, "no tool cards at all");
+    assert(cards.total === cards.insidePanel, `${cards.total - cards.insidePanel} tool cards live outside a panel`);
+    const strays = rows.filter((r) => r.kind === "other");
+    assert(strays.length === 0, "stray rows: " + JSON.stringify(strays.map((r) => r.msg)));
+    return `${cards.total} tool cards, all inside the turn panels; 0 step-only rows`;
   });
 
   await test("Only the answer of a turn carries the icons and the token line", async () => {
